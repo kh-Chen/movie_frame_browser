@@ -499,17 +499,15 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   padding: 10px 12px;
   background-color: var(--bg-secondary);
   border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .toolbar-btn {
-  flex: 1 1 56px;
-  min-width: 56px;
-  max-width: 72px;
-  padding: 8px 6px;
+  flex: 0 0 auto;
+  padding: 7px 4px;
   border: none;
   border-radius: 8px;
   background-color: rgba(255, 255, 255, 0.08);

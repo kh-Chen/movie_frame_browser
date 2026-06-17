@@ -33,7 +33,16 @@
           :src="currentFrameUrl"
           :timestamp="currentTimestamp"
           :is-loading="isFrameLoading(currentTimestamp)"
+          :clip-mode="isClipMode"
+          :clip-url="clipUrl"
+          :clip-loading="clipLoading"
+          :clip-loading-text="clipLoadingText"
+          :clip-loading-progress="clipLoadingProgress"
+          :clip-error="clipHasError"
+          :clip-time-range="clipTimeRange"
           @step="stepFrame"
+          @exit-clip="stopClipPreview"
+          @clip-error="markClipError"
         />
       </section>
 
@@ -42,8 +51,13 @@
         <button type="button" class="toolbar-btn" @click="seekBy(-10)">-10s</button>
         <button type="button" class="toolbar-btn" @click="seekBy(-5)">-5s</button>
         <button type="button" class="toolbar-btn" @click="seekBy(-3)">-3s</button>
-        <button type="button" class="toolbar-btn toolbar-btn--accent" @click="showClipPreview">
-          预览
+        <button
+          type="button"
+          class="toolbar-btn toolbar-btn--accent"
+          :class="{ 'toolbar-btn--active': isClipMode }"
+          @click="toggleClipPreview"
+        >
+          {{ isClipMode ? '停止' : '预览' }}
         </button>
         <button type="button" class="toolbar-btn" @click="seekBy(3)">+3s</button>
         <button type="button" class="toolbar-btn" @click="seekBy(5)">+5s</button>
@@ -80,13 +94,6 @@
         </button>
       </section>
     </main>
-    
-    <ClipPreview
-      :visible="showClip"
-      :movie-id="movieId"
-      :timestamp="currentTimestamp"
-      @close="showClip = false"
-    />
     
     <!-- Movie Info Modal -->
     <Teleport to="body">
@@ -167,8 +174,8 @@ import { useFrameLoader } from '../composables/useFrameLoader'
 import { formatDuration, formatFileSize, formatTimeShort } from '../utils/formatTime'
 import FrameDisplay from '../components/FrameDisplay.vue'
 import Timeline from '../components/Timeline.vue'
-import ClipPreview from '../components/ClipPreview.vue'
 import LoadingOverlay from '../components/LoadingOverlay.vue'
+import { useClipLoader } from '../composables/useClipLoader'
 
 const props = defineProps({
   id: {
@@ -188,7 +195,19 @@ const movieId = ref(props.id)
 const movie = ref(null)
 const isLoading = ref(true)
 const currentTimestamp = ref(0)
-const showClip = ref(false)
+const isClipMode = ref(false)
+
+const {
+  isLoading: clipLoading,
+  loadingProgress: clipLoadingProgress,
+  loadingText: clipLoadingText,
+  clipUrl,
+  hasError: clipHasError,
+  timeRange: clipTimeRange,
+  loadClip,
+  reset: resetClip,
+  markError: markClipError,
+} = useClipLoader(movieId.value)
 const showInfo = ref(false)
 const showDeleteConfirm = ref(false)
 const isDeleting = ref(false)
@@ -236,8 +255,15 @@ const loadMovie = async () => {
 }
 
 // Step by one second (design: frame preview advances 1s per step)
+const stopClipPreview = () => {
+  if (!isClipMode.value) return
+  isClipMode.value = false
+  resetClip()
+}
+
 const seekBy = (deltaSec) => {
   if (!movie.value) return
+  stopClipPreview()
   const next = Math.max(
     0,
     Math.min(movie.value.duration, currentTimestamp.value + deltaSec)
@@ -253,11 +279,15 @@ const stepFrame = (direction) => {
 
 // Handle seek
 const handleSeek = (timestamp) => {
+  stopClipPreview()
   currentTimestamp.value = timestamp
 }
 
 // Handle dragging
 const handleDragging = (timestamp) => {
+  if (isClipMode.value) {
+    stopClipPreview()
+  }
   currentTimestamp.value = timestamp
   // Cancel any scheduled preload during drag
   if (preloadTimer) {
@@ -278,7 +308,8 @@ const schedulePreload = (timestamp) => {
 }
 
 const handleKeydown = (event) => {
-  if (showClip.value || showInfo.value || showDeleteConfirm.value) return
+  if (showInfo.value || showDeleteConfirm.value) return
+  if (isClipMode.value) return
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
     stepFrame(-1)
@@ -288,8 +319,13 @@ const handleKeydown = (event) => {
   }
 }
 
-const showClipPreview = () => {
-  showClip.value = true
+const toggleClipPreview = async () => {
+  if (isClipMode.value) {
+    stopClipPreview()
+    return
+  }
+  isClipMode.value = true
+  await loadClip(currentTimestamp.value)
 }
 
 // Go to gallery
@@ -299,6 +335,7 @@ const goToGallery = () => {
 
 // Go to cover
 const goToCover = () => {
+  stopClipPreview()
   currentTimestamp.value = 0
   schedulePreload(0)
 }
@@ -350,6 +387,7 @@ onUnmounted(() => {
   if (preloadTimer) {
     clearTimeout(preloadTimer)
   }
+  resetClip()
   window.removeEventListener('popstate', handlePopState)
   window.removeEventListener('keydown', handleKeydown)
 })
@@ -519,6 +557,18 @@ onUnmounted(() => {
 .toolbar-btn--accent:hover {
   background: linear-gradient(135deg, var(--accent), #ff6b8a);
   filter: brightness(1.08);
+}
+
+.toolbar-btn--active {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.toolbar-btn--accent.toolbar-btn--active {
+  background: rgba(233, 69, 96, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(233, 69, 96, 0.5);
+  filter: none;
 }
 
 .action-bar {

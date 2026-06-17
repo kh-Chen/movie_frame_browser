@@ -41,6 +41,25 @@ function getClipPath(movieId, timestamp, window = config.frame.defaultClipWindow
   return path.join(movieClipDir, `t${ts}_w${w}.mp4`);
 }
 
+function getClipMetaPath(movieId, timestamp, window = config.frame.defaultClipWindow) {
+  return getClipPath(movieId, timestamp, window).replace(/\.mp4$/, '.json');
+}
+
+async function saveClipMeta(movieId, timestamp, window, meta) {
+  const metaPath = getClipMetaPath(movieId, timestamp, window);
+  await fs.writeFile(metaPath, JSON.stringify(meta));
+}
+
+async function readClipMeta(movieId, timestamp, window) {
+  const metaPath = getClipMetaPath(movieId, timestamp, window);
+  try {
+    const data = await fs.readFile(metaPath, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get temporary file path
  * @param {string} taskId - Task ID
@@ -433,6 +452,9 @@ module.exports = {
   getCoverPath,
   getFramePath,
   getClipPath,
+  getClipMetaPath,
+  saveClipMeta,
+  readClipMeta,
   getTempPath,
   
   // Directory operations

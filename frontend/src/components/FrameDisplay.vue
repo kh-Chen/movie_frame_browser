@@ -12,37 +12,82 @@
     @mouseleave="onPointerUp"
   >
     <div class="frame-container">
-      <div v-if="isLoading && !currentSrc" class="frame-placeholder">
-        <div class="loading-spinner"></div>
-      </div>
+      <!-- Clip preview mode -->
+      <template v-if="clipMode">
+        <div v-if="clipLoading" class="frame-placeholder clip-loading">
+          <div class="loading-spinner"></div>
+          <p class="clip-loading-text">{{ clipLoadingText }}</p>
+          <div v-if="clipLoadingProgress > 0" class="clip-progress">
+            <div class="clip-progress-bar">
+              <div class="clip-progress-fill" :style="{ width: clipLoadingProgress + '%' }"></div>
+            </div>
+          </div>
+        </div>
 
-      <div v-else-if="hasError" class="frame-error">
-        <span class="error-icon">⚠️</span>
-        <span>加载失败</span>
-      </div>
+        <video
+          v-else-if="clipUrl && !clipError"
+          ref="clipVideoRef"
+          :src="clipUrl"
+          class="clip-video fade-in"
+          controls
+          autoplay
+          loop
+          muted
+          playsinline
+          @error="emit('clip-error')"
+        />
 
-      <img
-        v-if="currentSrc"
-        ref="frameImg"
-        :src="currentSrc"
-        :alt="`帧 ${currentTimestamp}`"
-        :class="{ 'fade-in': imageLoaded }"
-        draggable="false"
-        @load="onImageLoad"
-        @error="onImageError"
-      />
+        <div v-else-if="clipError" class="frame-error">
+          <span class="error-icon">⚠️</span>
+          <span>片段加载失败</span>
+        </div>
+      </template>
 
-      <div v-else-if="!isLoading" class="frame-placeholder-static">
-        <span class="placeholder-icon">🖼️</span>
-        <span>暂无帧</span>
-      </div>
+      <!-- Frame image mode -->
+      <template v-else>
+        <div v-if="isLoading && !currentSrc" class="frame-placeholder">
+          <div class="loading-spinner"></div>
+        </div>
+
+        <div v-else-if="hasError" class="frame-error">
+          <span class="error-icon">⚠️</span>
+          <span>加载失败</span>
+        </div>
+
+        <img
+          v-if="currentSrc"
+          ref="frameImg"
+          :src="currentSrc"
+          :alt="`帧 ${currentTimestamp}`"
+          :class="{ 'fade-in': imageLoaded }"
+          draggable="false"
+          @load="onImageLoad"
+          @error="onImageError"
+        />
+
+        <div v-else-if="!isLoading" class="frame-placeholder-static">
+          <span class="placeholder-icon">🖼️</span>
+          <span>暂无帧</span>
+        </div>
+      </template>
 
       <div class="time-overlay">
-        <span class="time-badge">{{ displayTime }}</span>
+        <span v-if="clipMode && clipTimeRange" class="time-badge clip-range-badge">{{ clipTimeRange }}</span>
+        <span v-else class="time-badge">{{ displayTime }}</span>
       </div>
+
+      <button
+        v-if="clipMode"
+        type="button"
+        class="exit-clip-btn"
+        title="返回帧预览"
+        @click.stop="emit('exit-clip')"
+      >
+        ✕
+      </button>
     </div>
 
-    <p v-if="swipeHint" class="swipe-hint">{{ swipeHint }}</p>
+    <p v-if="swipeHint && !clipMode" class="swipe-hint">{{ swipeHint }}</p>
   </div>
 </template>
 
@@ -66,15 +111,44 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  clipMode: {
+    type: Boolean,
+    default: false
+  },
+  clipUrl: {
+    type: String,
+    default: null
+  },
+  clipLoading: {
+    type: Boolean,
+    default: false
+  },
+  clipLoadingText: {
+    type: String,
+    default: '正在截取片段...'
+  },
+  clipLoadingProgress: {
+    type: Number,
+    default: 0
+  },
+  clipError: {
+    type: Boolean,
+    default: false
+  },
+  clipTimeRange: {
+    type: String,
+    default: ''
+  },
   swipeHint: {
     type: String,
     default: '左右滑动切换帧'
   }
 })
 
-const emit = defineEmits(['click', 'step'])
+const emit = defineEmits(['click', 'step', 'exit-clip', 'clip-error'])
 
 const frameImg = ref(null)
+const clipVideoRef = ref(null)
 const currentSrc = ref(null)
 const imageLoaded = ref(false)
 const hasError = ref(false)
@@ -115,6 +189,11 @@ const recordMove = (clientX, clientY) => {
 
 const finishGesture = (clientX, clientY) => {
   if (!pointerActive) return
+  if (props.clipMode) {
+    pointerActive = false
+    gestureMoved = false
+    return
+  }
 
   const dx = clientX - startX
   const dy = clientY - startY
@@ -172,7 +251,7 @@ const onImageError = () => {
 }
 
 const handleClick = () => {
-  if (props.isLoading || !currentSrc.value) return
+  if (props.clipMode || props.isLoading || !currentSrc.value) return
   emit('click')
 }
 </script>
@@ -212,6 +291,65 @@ const handleClick = () => {
 
 .frame-container img.fade-in {
   opacity: 1;
+}
+
+.clip-video {
+  max-width: 100%;
+  max-height: calc(100vh - 300px);
+  object-fit: contain;
+  opacity: 1;
+  background: #000;
+}
+
+.clip-loading {
+  animation: none;
+  gap: 12px;
+}
+
+.clip-loading-text {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.clip-progress {
+  width: 160px;
+}
+
+.clip-progress-bar {
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.clip-progress-fill {
+  height: 100%;
+  background-color: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.clip-range-badge {
+  font-size: 0.75rem;
+}
+
+.exit-clip-btn {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--text-primary);
+  font-size: 1rem;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.exit-clip-btn:hover {
+  opacity: 0.75;
 }
 
 .frame-placeholder {

@@ -6,6 +6,10 @@
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs').promises;
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 const config = require('../config');
 const logger = require('../utils/logger');
 const { formatTime } = require('../utils/timeFormatter');
@@ -48,17 +52,69 @@ function computePreviewSegment(timestamp, window, videoDuration, maxDuration) {
   return { startTime, duration, center, window: effectiveWindow };
 }
 
+/** Nearest keyframe at or before timestamp (stream-copy seek alignment). */
+async function findKeyframeBefore(videoPath, timestamp) {
+  const t = roundSeekTime(timestamp);
+  const searchStart = Math.max(0, t - 60);
+  const interval = `${searchStart}%@${t}`;
+
+  try {
+    const { stdout } = await execFileAsync(FFPROBE_PATH, [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-skip_frame', 'nokey',
+      '-show_entries', 'frame=best_effort_timestamp_time',
+      '-of', 'csv=p=0',
+      '-read_intervals', interval,
+      videoPath,
+    ], { maxBuffer: 1024 * 1024 });
+
+    const times = stdout.trim().split('\n')
+      .map((line) => parseFloat(line))
+      .filter((n) => !Number.isNaN(n) && n <= t + 0.001);
+
+    if (times.length === 0) {
+      return Math.max(0, t);
+    }
+    return roundSeekTime(Math.max(...times));
+  } catch (error) {
+    logger.warn('Keyframe probe failed, using requested start', { error: error.message });
+    return Math.max(0, t);
+  }
+}
+
+/** Resolve actual source timeline bounds from a generated clip file. */
+async function resolveClipSegment(videoPath, clipPath, segment, videoDuration = null) {
+  const { startTime: requestedStart, duration: requestedDuration } = segment;
+  const clipInfo = await getVideoInfo(clipPath);
+  const actualStart = await findKeyframeBefore(videoPath, requestedStart);
+  let actualEnd = roundSeekTime(actualStart + clipInfo.duration);
+  if (videoDuration != null) {
+    actualEnd = roundSeekTime(Math.min(videoDuration, actualEnd));
+  }
+
+  return {
+    startTime: actualStart,
+    endTime: actualEnd,
+    duration: roundSeekTime(Math.max(0.1, actualEnd - actualStart)),
+    requestedStartTime: requestedStart,
+    requestedEndTime: roundSeekTime(requestedStart + requestedDuration),
+  };
+}
+
 /**
  * Extract a short MP4 clip for browser playback (stream copy, then ultrafast transcode).
+ * @returns {Promise<object>} Actual segment bounds in source video timeline
  */
 async function generatePreviewClip(videoPath, timestamp, window, outputPath, options = {}) {
   const { videoDuration = null, width = config.frame.defaultClipWidth } = options;
-  const { startTime, duration } = computePreviewSegment(
+  const segment = computePreviewSegment(
     timestamp,
     window,
     videoDuration,
     config.frame.defaultClipMaxDuration
   );
+  const { startTime, duration } = segment;
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
@@ -101,6 +157,8 @@ async function generatePreviewClip(videoPath, timestamp, window, outputPath, opt
         .output(outputPath)
     );
   }
+
+  return resolveClipSegment(videoPath, outputPath, segment, videoDuration);
 }
 
 /**
@@ -368,6 +426,8 @@ module.exports = {
   getVideoInfo,
   extractCover,
   extractFrame,
+  computePreviewSegment,
+  resolveClipSegment,
   generatePreviewClip,
   extractFrameBatch,
   extractFramesSmart,

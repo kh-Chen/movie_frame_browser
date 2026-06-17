@@ -81,7 +81,7 @@
             <div class="clip-thumb">
               <img
                 :src="getFrameUrl(movieId, clip.timestamp, 320)"
-                :alt="`Clip at ${formatTime(clip.timestamp)}`"
+                :alt="`Clip ${formatClipRange(clip)}`"
                 class="media-thumb"
                 loading="lazy"
               />
@@ -90,7 +90,7 @@
               </div>
             </div>
             <div class="media-info">
-              <span class="media-time">{{ formatTime(clip.timestamp) }}</span>
+              <span class="media-time clip-range">{{ formatClipRange(clip) }}</span>
               <span class="media-size">{{ formatSize(clip.size) }}</span>
             </div>
           </div>
@@ -133,7 +133,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMovieApi } from '../composables/useMovieApi'
-import { formatTime, formatFileSize } from '../utils/formatTime'
+import { formatTime, formatTimeShort, formatFileSize } from '../utils/formatTime'
 import ClipPreview from '../components/ClipPreview.vue'
 
 const props = defineProps({
@@ -157,6 +157,16 @@ const showClip = ref(false)
 const selectedClipTimestamp = ref(0)
 
 const formatSize = (bytes) => formatFileSize(bytes)
+
+const formatClipRange = (clip) => {
+  if (clip.startTime != null && clip.endTime != null) {
+    return `${formatTimeShort(clip.startTime)} ~ ${formatTimeShort(clip.endTime)}`
+  }
+  const w = clip.window ?? 1.5
+  const start = Math.max(0, clip.timestamp - w)
+  const end = clip.timestamp + w
+  return `${formatTimeShort(start)} ~ ${formatTimeShort(end)}`
+}
 
 const loadData = async () => {
   isLoading.value = true
@@ -392,6 +402,11 @@ onMounted(() => {
   font-weight: 600;
   color: var(--text-primary);
   font-family: monospace;
+}
+
+.clip-range {
+  font-size: 0.7rem;
+  letter-spacing: -0.02em;
 }
 
 .media-size {

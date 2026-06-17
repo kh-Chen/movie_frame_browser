@@ -29,7 +29,7 @@ const corsOptions = {
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'Content-Type'],
+  exposedHeaders: ['Content-Length', 'Content-Type', 'X-Clip-Start', 'X-Clip-End'],
   credentials: true,
   maxAge: 86400, // 24 hours
 };

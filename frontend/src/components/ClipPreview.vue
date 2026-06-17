@@ -11,7 +11,7 @@
             </button>
           </div>
 
-          <div class="modal-content" ref="contentRef">
+          <div class="modal-content">
             <div v-if="isLoading" class="loading-state">
               <div class="loading-spinner"></div>
               <p class="loading-text">{{ loadingText }}</p>
@@ -25,7 +25,6 @@
 
             <video
               v-else-if="clipUrl && !hasError"
-              ref="videoRef"
               :src="clipUrl"
               class="clip-video"
               controls
@@ -33,7 +32,7 @@
               loop
               muted
               playsinline
-              @error="hasError = true"
+              @error="markError"
             />
 
             <div v-else-if="hasError" class="error-state">
@@ -58,11 +57,8 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
-import { formatTimeShort } from '../utils/formatTime'
-import { useMovieApi } from '../composables/useMovieApi'
-
-const PREVIEW_WINDOW_SEC = 1.5
+import { watch } from 'vue'
+import { useClipLoader } from '../composables/useClipLoader'
 
 const props = defineProps({
   visible: {
@@ -81,28 +77,22 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 
-const { getClipUrl, getFrameUrl, getTaskStatus } = useMovieApi()
-
-const contentRef = ref(null)
-const videoRef = ref(null)
-const isLoading = ref(true)
-const loadingProgress = ref(0)
-const loadingText = ref('正在截取片段...')
-const clipUrl = ref(null)
-const hasError = ref(false)
-const fallbackFrames = ref([])
-
-let pollTimer = null
-
-const timeRange = computed(() => {
-  const start = props.timestamp - PREVIEW_WINDOW_SEC
-  const end = props.timestamp + PREVIEW_WINDOW_SEC
-  return `${formatTimeShort(Math.max(0, start))} ~ ${formatTimeShort(end)}`
-})
+const {
+  isLoading,
+  loadingProgress,
+  loadingText,
+  clipUrl,
+  hasError,
+  fallbackFrames,
+  timeRange,
+  loadClip,
+  reset,
+  markError,
+} = useClipLoader(props.movieId)
 
 watch(() => props.visible, (visible) => {
   if (visible) {
-    loadClip()
+    loadClip(props.timestamp)
   } else {
     reset()
   }
@@ -110,124 +100,9 @@ watch(() => props.visible, (visible) => {
 
 watch(() => props.timestamp, () => {
   if (props.visible) {
-    loadClip()
+    loadClip(props.timestamp)
   }
 })
-
-const waitForClip = (url) => {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video')
-    video.preload = 'auto'
-    video.onloadeddata = () => resolve(url)
-    video.onerror = () => reject(new Error('Clip load failed'))
-    video.src = url
-  })
-}
-
-const pollClipTask = async (taskId, url) => {
-  const maxAttempts = 60
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const data = await getTaskStatus(taskId)
-    const task = data.task || data
-
-    loadingProgress.value = task.progress || 0
-    loadingText.value = task.message || '正在截取片段...'
-
-    if (task.status === 'completed') {
-      const cacheBusted = `${url}&cache=${Date.now()}`
-      await waitForClip(cacheBusted)
-      return cacheBusted
-    }
-
-    if (task.status === 'failed') {
-      throw new Error(task.error || '片段生成失败')
-    }
-
-    await new Promise((resolve) => {
-      pollTimer = setTimeout(resolve, 500)
-    })
-  }
-
-  throw new Error('片段生成超时')
-}
-
-const loadClip = async () => {
-  isLoading.value = true
-  hasError.value = false
-  loadingProgress.value = 0
-  loadingText.value = '正在截取片段...'
-  revokeClipUrl()
-  fallbackFrames.value = []
-
-  const url = getClipUrl(props.movieId, props.timestamp)
-
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'video/mp4, application/json' },
-    })
-
-    const contentType = response.headers.get('content-type') || ''
-
-    if (response.ok && (contentType.includes('video/mp4') || contentType.includes('octet-stream'))) {
-      const blobUrl = URL.createObjectURL(await response.blob())
-      clipUrl.value = blobUrl
-      loadingProgress.value = 100
-      return
-    }
-
-    if (response.status === 202) {
-      const data = await response.json()
-      clipUrl.value = await pollClipTask(data.taskId, url)
-      loadingProgress.value = 100
-      return
-    }
-
-    throw new Error(`Unexpected clip response: ${response.status}`)
-  } catch (error) {
-    console.error('Failed to load clip:', error)
-    loadFallbackFrames()
-  } finally {
-    isLoading.value = false
-  }
-}
-
-const loadFallbackFrames = () => {
-  hasError.value = true
-  loadingText.value = '片段加载失败，尝试加载静态帧...'
-
-  const frames = []
-  const interval = 1.5
-  const start = props.timestamp - PREVIEW_WINDOW_SEC
-
-  for (let i = 0; i < 5; i++) {
-    const t = start + i * interval
-    if (t >= 0) {
-      frames.push(getFrameUrl(props.movieId, Math.floor(t)))
-    }
-  }
-
-  fallbackFrames.value = frames
-}
-
-const revokeClipUrl = () => {
-  if (clipUrl.value && clipUrl.value.startsWith('blob:')) {
-    URL.revokeObjectURL(clipUrl.value)
-  }
-  clipUrl.value = null
-}
-
-const reset = () => {
-  if (pollTimer) {
-    clearTimeout(pollTimer)
-    pollTimer = null
-  }
-  revokeClipUrl()
-  isLoading.value = true
-  loadingProgress.value = 0
-  hasError.value = false
-  fallbackFrames.value = []
-}
 
 const close = () => {
   emit('close')
@@ -238,10 +113,6 @@ const handleOverlayClick = (e) => {
     close()
   }
 }
-
-onUnmounted(() => {
-  reset()
-})
 </script>
 
 <style scoped>

@@ -18,6 +18,32 @@ const { formatTime, formatFileSize } = require('../utils/timeFormatter');
 const logger = require('../utils/logger');
 const { staticUrl } = require('../utils/staticUrl');
 
+function setClipMetaHeaders(res, meta) {
+  if (!meta) return;
+  res.set('X-Clip-Start', String(meta.startTime));
+  res.set('X-Clip-End', String(meta.endTime));
+}
+
+async function ensureClipMeta(movie, timestamp, clipWindow, clipPath) {
+  let meta = await storageService.readClipMeta(movie.id, timestamp, clipWindow);
+  if (meta) return meta;
+
+  const segment = ffmpegService.computePreviewSegment(
+    timestamp,
+    clipWindow,
+    movie.duration,
+    config.frame.defaultClipMaxDuration
+  );
+  meta = await ffmpegService.resolveClipSegment(
+    movie.originalPath,
+    clipPath,
+    segment,
+    movie.duration
+  );
+  await storageService.saveClipMeta(movie.id, timestamp, clipWindow, meta);
+  return meta;
+}
+
 /**
  * Get all movies
  */
@@ -295,6 +321,8 @@ async function getClip(req, res, next) {
     const exists = await storageService.fileExists(clipPath);
 
     if (exists) {
+      const meta = await ensureClipMeta(movie, timestamp, clipWindow, clipPath);
+      setClipMetaHeaders(res, meta);
       res.type('mp4');
       return res.sendFile(clipPath);
     }
@@ -327,13 +355,14 @@ async function getClip(req, res, next) {
       },
       execute: async ({ onProgress, params }) => {
         onProgress(20, '正在截取片段...');
-        await ffmpegService.generatePreviewClip(
+        const segment = await ffmpegService.generatePreviewClip(
           params.moviePath,
           params.timestamp,
           params.window,
           clipPath,
           { videoDuration: params.videoDuration }
         );
+        await storageService.saveClipMeta(id, timestamp, clipWindow, segment);
         onProgress(100, '片段生成完成');
       },
     });
@@ -401,13 +430,21 @@ async function listCachedClips(req, res, next) {
     }
 
     const cached = await storageService.listCachedClips(id);
-    const clips = cached.map((clip) => ({
-      timestamp: clip.timestamp,
-      window: clip.window,
-      url: `/api/movies/${id}/clip?t=${clip.timestamp}&window=${clip.window}`,
-      staticUrl: staticUrl('clips', id, `t${clip.timestamp}_w${clip.window}.mp4`),
-      size: clip.size,
-      createdAt: clip.createdAt,
+    const clips = await Promise.all(cached.map(async (clip) => {
+      const clipPath = storageService.getClipPath(id, clip.timestamp, clip.window);
+      const meta = await ensureClipMeta(movie, clip.timestamp, clip.window, clipPath);
+
+      return {
+        timestamp: clip.timestamp,
+        window: clip.window,
+        startTime: meta.startTime,
+        endTime: meta.endTime,
+        duration: meta.duration,
+        url: `/api/movies/${id}/clip?t=${clip.timestamp}&window=${clip.window}`,
+        staticUrl: staticUrl('clips', id, `t${clip.timestamp}_w${clip.window}.mp4`),
+        size: clip.size,
+        createdAt: clip.createdAt,
+      };
     }));
 
     res.json({

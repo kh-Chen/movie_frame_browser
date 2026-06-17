@@ -1,0 +1,307 @@
+/* Mobile-first styles - optimized for touch devices */
+
+/* Base mobile styles */
+html {
+  font-size: 16px;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh; /* Dynamic viewport height for mobile browsers */
+  overflow-x: hidden;
+}
+
+/* Touch-friendly targets - minimum 44x44px per iOS HIG */
+button,
+a,
+input,
+select,
+textarea,
+[role="button"],
+.touchable {
+  min-height: 44px;
+  min-width: 44px;
+  touch-action: manipulation;
+}
+
+/* Disable text selection on interactive elements */
+button,
+[role="button"],
+.clickable {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Active states for touch */
+button:active,
+a:active,
+[role="button"]:active {
+  opacity: 0.8;
+  transform: scale(0.98);
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Disable pull-to-refresh on the app */
+body {
+  overscroll-behavior-y: contain;
+}
+
+/* Mobile viewport */
+@media (max-width: 768px) {
+  /* Smaller fonts for mobile */
+  html {
+    font-size: 15px;
+  }
+  
+  /* Reduce padding */
+  .page-content {
+    padding: 16px;
+  }
+  
+  /* Stack layouts on mobile */
+  .stack-on-mobile {
+    flex-direction: column;
+  }
+  
+  /* Full-width buttons on mobile */
+  .btn-full-mobile {
+    width: 100%;
+  }
+  
+  
+  /* Modal takes more screen on mobile */
+  .modal-content {
+    max-height: 70vh;
+  }
+  
+  /* Bottom sheet style for modals */
+  .bottom-sheet {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: 20px 20px 0 0;
+    max-height: 80vh;
+  }
+  
+  /* Action bar at bottom */
+  .bottom-action-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    background-color: var(--bg-secondary);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Frame display optimized for mobile */
+  .frame-display {
+    min-height: 200px;
+  }
+  
+  /* Movie grid - 2 columns on mobile */
+  .movie-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  
+  /* Card adjustments */
+  .movie-card {
+    border-radius: 10px;
+  }
+  
+  .movie-cover {
+    aspect-ratio: 16 / 10;
+  }
+  
+  .movie-info {
+    padding: 10px;
+  }
+  
+  .movie-name {
+    font-size: 0.875rem;
+  }
+  
+  /* Header adjustments */
+  .page-header {
+    padding: 12px 16px;
+  }
+  
+  .page-title {
+    font-size: 1.125rem;
+  }
+  
+  
+  /* GIF preview optimized for mobile */
+  .gif-preview-modal {
+    max-height: 85vh;
+  }
+  
+  .gif-image {
+    max-height: 280px;
+  }
+  
+  /* Toast at bottom of screen */
+  .toast {
+    bottom: 24px;
+    left: 16px;
+    right: 16px;
+    transform: none;
+    text-align: center;
+  }
+  
+  .toast-enter-from,
+  .toast-leave-to {
+    transform: translateY(20px);
+  }
+}
+
+/* Landscape mobile */
+@media (max-width: 768px) and (orientation: landscape) {
+  /* Adjust frame display for landscape */
+  .frame-display {
+    min-height: 150px;
+  }
+  
+  /* Horizontal timeline on landscape */
+  .timeline-section {
+    position: relative;
+  }
+  
+  /* Reduce header height in landscape */
+  .page-header {
+    padding: 8px 16px;
+  }
+  
+  .page-title {
+    font-size: 1rem;
+  }
+}
+
+/* Small phones */
+@media (max-width: 360px) {
+  .movie-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .action-bar {
+    flex-wrap: wrap;
+  }
+  
+  .action-item {
+    flex: 1 1 45%;
+  }
+}
+
+/* Tablet */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .movie-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Large screens */
+@media (min-width: 1025px) {
+  .movie-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  
+  .page-content {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+}
+
+/* High DPI displays */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  /* Crisp images on retina displays */
+  img {
+    image-rendering: -webkit-optimize-contrast;
+  }
+}
+
+/* Dark mode preference */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Already dark theme by default */
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Hover capability detection - disable hover styles on touch */
+@media (hover: none) and (pointer: coarse) {
+  /* Touch device */
+  button:hover,
+  a:hover,
+  .touchable:hover {
+    opacity: 1;
+    transform: none;
+  }
+  
+  /* Remove hover effects */
+  .movie-card:hover {
+    transform: none;
+    box-shadow: var(--shadow-sm);
+  }
+}
+
+/* Fine pointer (mouse) detection */
+@media (hover: fine) and (pointer: fine) {
+  /* Desktop/laptop with mouse */
+  button:hover,
+  a:hover {
+    opacity: 0.9;
+  }
+}
+
+/* Safe area for notched devices */
+@supports (padding: env(safe-area-inset-top)) {
+  .notch-safe {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  
+  .notch-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Input styles for mobile */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea {
+  font-size: 16px !important; /* Prevents zoom on iOS */
+}
+
+/* Video element */
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Fullscreen support */
+:fullscreen {
+  background-color: var(--bg-primary);
+}
+
+:-webkit-full-screen {
+  background-color: var(--bg-primary);
+}

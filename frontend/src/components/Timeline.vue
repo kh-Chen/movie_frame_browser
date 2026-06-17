@@ -12,16 +12,6 @@
       <div class="track-inner">
         <div class="track-bg"></div>
 
-        <!-- Sampled keyframe ticks (avoid visual noise) -->
-        <div class="track-ticks" aria-hidden="true">
-          <span
-            v-for="frame in visibleKeyFrames"
-            :key="frame.timestamp"
-            class="tick"
-            :style="{ left: `${timeToPosition(frame.timestamp)}%` }"
-          ></span>
-        </div>
-
         <div
           class="track-progress"
           :style="{ width: `${sliderPosition}%` }"
@@ -50,9 +40,6 @@
 import { ref, computed, onUnmounted, watch } from 'vue'
 import { formatTime, formatTimeShort } from '../utils/formatTime'
 
-const RAIL_PADDING = 0.08 // 8% margin each side per design spec
-const MAX_VISIBLE_TICKS = 20
-
 const props = defineProps({
   duration: {
     type: Number,
@@ -61,52 +48,30 @@ const props = defineProps({
   currentTime: {
     type: Number,
     default: 0
-  },
-  keyFrames: {
-    type: Array,
-    default: () => []
   }
 })
 
 const emit = defineEmits(['seek', 'dragging'])
 
 const timeToPosition = (time) => {
-  if (props.duration === 0) return RAIL_PADDING * 100
-  const normalized = time / props.duration
-  const usable = 1 - RAIL_PADDING * 2
-  return (RAIL_PADDING + normalized * usable) * 100
+  if (props.duration === 0) return 0
+  return (time / props.duration) * 100
 }
 
 const positionToTime = (position) => {
-  const pct = position / 100
-  const usable = 1 - RAIL_PADDING * 2
-  const normalized = (pct - RAIL_PADDING) / usable
+  const normalized = position / 100
   return Math.max(0, Math.min(props.duration, normalized * props.duration))
 }
 
 const trackRef = ref(null)
 const isDragging = ref(false)
-const sliderPosition = ref(RAIL_PADDING * 100)
+const sliderPosition = ref(0)
 
 const displayTime = computed(() => formatTime(props.currentTime))
 const totalTimeDisplay = computed(() => formatTimeShort(props.duration))
 
-/** Sample keyframes so ticks stay readable on long movies */
-const visibleKeyFrames = computed(() => {
-  const frames = props.keyFrames
-  if (frames.length <= MAX_VISIBLE_TICKS) return frames
-
-  const step = Math.ceil(frames.length / MAX_VISIBLE_TICKS)
-  const sampled = frames.filter((_, i) => i % step === 0)
-  const last = frames[frames.length - 1]
-  if (last && sampled[sampled.length - 1]?.timestamp !== last.timestamp) {
-    sampled.push(last)
-  }
-  return sampled
-})
-
 watch(() => props.currentTime, (newTime) => {
-  if (!isDragging.value && !isInertiaScrolling) {
+  if (!isDragging.value) {
     sliderPosition.value = timeToPosition(newTime)
   }
 })
@@ -115,13 +80,8 @@ watch(() => props.duration, () => {
   sliderPosition.value = timeToPosition(props.currentTime)
 })
 
-let isInertiaScrolling = false
 let startX = 0
 let startPosition = 0
-let velocity = 0
-let lastX = 0
-let lastTime = 0
-let inertiaId = null
 let dragThrottleTimer = null
 
 const handleTouchStart = (e) => {
@@ -166,16 +126,8 @@ const handleMouseUp = () => {
 
 const beginDrag = (clientX) => {
   isDragging.value = true
-  isInertiaScrolling = false
   startX = clientX
   startPosition = sliderPosition.value
-  lastX = clientX
-  lastTime = Date.now()
-  velocity = 0
-  if (inertiaId) {
-    cancelAnimationFrame(inertiaId)
-    inertiaId = null
-  }
 }
 
 const updateDragPosition = (clientX) => {
@@ -186,14 +138,6 @@ const updateDragPosition = (clientX) => {
   const newPosition = Math.max(0, Math.min(100, startPosition + deltaPosition))
 
   sliderPosition.value = newPosition
-
-  const now = Date.now()
-  const dt = now - lastTime
-  if (dt > 0) {
-    velocity = ((clientX - lastX) / dt) * 16
-  }
-  lastX = clientX
-  lastTime = now
 
   if (!dragThrottleTimer) {
     dragThrottleTimer = setTimeout(() => {
@@ -209,39 +153,7 @@ const finishDrag = () => {
     dragThrottleTimer = null
   }
 
-  if (Math.abs(velocity) > 0.3) {
-    applyInertia()
-  } else {
-    emit('seek', positionToTime(sliderPosition.value))
-  }
-}
-
-const applyInertia = () => {
-  isInertiaScrolling = true
-  let currentVelocity = velocity
-  const friction = 0.92
-  const minVelocity = 0.1
-
-  const animate = () => {
-    if (!isInertiaScrolling) {
-      emit('seek', positionToTime(sliderPosition.value))
-      return
-    }
-
-    currentVelocity *= friction
-
-    if (Math.abs(currentVelocity) < minVelocity) {
-      isInertiaScrolling = false
-      emit('seek', positionToTime(sliderPosition.value))
-      return
-    }
-
-    sliderPosition.value = Math.max(0, Math.min(100, sliderPosition.value + currentVelocity * 0.5))
-    emit('dragging', positionToTime(sliderPosition.value))
-    inertiaId = requestAnimationFrame(animate)
-  }
-
-  inertiaId = requestAnimationFrame(animate)
+  emit('seek', positionToTime(sliderPosition.value))
 }
 
 const handleTrackClick = (e) => {
@@ -260,7 +172,6 @@ const cleanupDragListeners = () => {
 }
 
 onUnmounted(() => {
-  if (inertiaId) cancelAnimationFrame(inertiaId)
   if (dragThrottleTimer) clearTimeout(dragThrottleTimer)
   cleanupDragListeners()
   document.removeEventListener('mousemove', handleMouseMove)
@@ -335,21 +246,6 @@ onUnmounted(() => {
   inset: 0;
   background: rgba(255, 255, 255, 0.12);
   border-radius: 2px;
-}
-
-.track-ticks {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.tick {
-  position: absolute;
-  top: 0;
-  width: 1px;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.18);
-  transform: translateX(-50%);
 }
 
 .track-progress {

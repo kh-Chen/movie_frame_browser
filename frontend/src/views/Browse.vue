@@ -55,7 +55,6 @@
         <Timeline 
           :duration="movie?.duration || 0"
           :current-time="currentTimestamp"
-          :key-frames="keyFrames"
           @seek="handleSeek"
           @dragging="handleDragging"
         />
@@ -181,7 +180,7 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const store = useMovieStore()
-const { getMovie, deleteMovie: apiDeleteMovie, getFrameIndex, getFrameUrl } = useMovieApi()
+const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl } = useMovieApi()
 const { preloadFrames, isLoading: isFrameLoading } = useFrameLoader()
 
 // State
@@ -189,7 +188,6 @@ const movieId = ref(props.id)
 const movie = ref(null)
 const isLoading = ref(true)
 const currentTimestamp = ref(0)
-const keyFrames = ref([])
 const showClip = ref(false)
 const showInfo = ref(false)
 const showDeleteConfirm = ref(false)
@@ -220,9 +218,6 @@ const loadMovie = async () => {
     const data = await getMovie(movieId.value)
     movie.value = data
     store.setCurrentMovie(data)
-    
-    // Load key frames
-    await loadKeyFrames()
 
     const queryTime = parseFloat(route.query.t)
     if (!isNaN(queryTime) && queryTime >= 0 && queryTime <= data.duration) {
@@ -237,17 +232,6 @@ const loadMovie = async () => {
     movie.value = null
   } finally {
     isLoading.value = false
-  }
-}
-
-// Load key frames
-const loadKeyFrames = async () => {
-  try {
-    const data = await getFrameIndex(movieId.value, 60)
-    keyFrames.value = data.frames || []
-  } catch (error) {
-    console.error('Failed to load key frames:', error)
-    keyFrames.value = []
   }
 }
 

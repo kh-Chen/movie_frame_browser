@@ -7,6 +7,7 @@ const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const { generateTaskId } = require('../utils/idGenerator');
+const { cpuLoadMonitor } = require('../utils/cpuLoadMonitor');
 const cacheService = require('./cacheService');
 
 // Semaphore for controlling concurrent ffmpeg processes
@@ -68,9 +69,9 @@ class TaskQueue {
     this.queue = [];
     this.processing = new Map(); // taskId -> task info
     this.isProcessing = false;
-    this.lastCpuCheck = 0;
-    this.cpuLoadHistory = [];
-    
+
+    cpuLoadMonitor.start();
+
     // Start queue processor
     this.startProcessor();
     
@@ -81,52 +82,17 @@ class TaskQueue {
   }
 
   /**
-   * Get current CPU load average
+   * Get current normalized CPU load (0-1).
    */
   getCpuLoad() {
-    const loadavg = os.loadavg();
-    const cpuCount = os.cpus().length;
-    // Normalize load to 0-1 range (loadavg[0] is 1-minute average)
-    return loadavg[0] / cpuCount;
+    return cpuLoadMonitor.getLoad();
   }
 
   /**
    * Check if we should accept new tasks based on CPU load
    */
   shouldAcceptTasks() {
-    const cpuLoad = this.getCpuLoad();
-    const threshold = config.taskQueue.cpuLoadThreshold;
-    
-    // Add to history
-    this.cpuLoadHistory.push({ time: Date.now(), load: cpuLoad });
-    
-    // Keep only last 12 readings (1 minute at 5-second intervals)
-    if (this.cpuLoadHistory.length > 12) {
-      this.cpuLoadHistory.shift();
-    }
-    
-    // Check if load is above threshold
-    if (cpuLoad > threshold) {
-      logger.warn('CPU load too high, pausing task queue', { 
-        cpuLoad: cpuLoad.toFixed(2),
-        threshold,
-      });
-      return false;
-    }
-    
-    // Check recent history (should not have sustained high load)
-    const recentHighLoad = this.cpuLoadHistory
-      .slice(-6) // Last 30 seconds
-      .filter(h => h.load > threshold);
-    
-    if (recentHighLoad.length >= 4) {
-      logger.warn('Sustained high CPU load detected', { 
-        highLoadCount: recentHighLoad.length,
-      });
-      return false;
-    }
-    
-    return true;
+    return cpuLoadMonitor.shouldAccept(config.taskQueue.cpuLoadThreshold);
   }
 
   /**
@@ -341,13 +307,16 @@ class TaskQueue {
    * Get worker status
    */
   getWorkerStatus() {
+    const cpuStatus = cpuLoadMonitor.getStatus();
+
     return {
       concurrent: this.semaphore.count,
       maxConcurrent: this.semaphore.maxCount,
-      cpuUsage: this.getCpuLoad(),
-      cpuLoadHistory: this.cpuLoadHistory.slice(-6),
-      systemLoadavg: os.loadavg(),
-      cpuCores: os.cpus().length,
+      cpuUsage: cpuStatus.load,
+      cpuLoadMethod: cpuStatus.method,
+      cpuLoadHistory: cpuStatus.history,
+      systemLoadavg: cpuStatus.systemLoadavg,
+      cpuCores: cpuStatus.cpuCores,
     };
   }
 
@@ -395,9 +364,8 @@ class TaskQueue {
       }
     }, 1000);
     
-    // Check CPU load every 5 seconds
+    // Log CPU status every 5 seconds (sampling handled by cpuLoadMonitor)
     setInterval(() => {
-      this.getCpuLoad(); // Update history
       logger.debug('CPU status check', this.getWorkerStatus());
     }, 5000);
   }

@@ -500,14 +500,14 @@ onUnmounted(() => {
   justify-content: center;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 10px;
   background-color: var(--bg-secondary);
   border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .toolbar-btn {
   flex: 0 0 auto;
-  padding: 7px 4px;
+  padding: 5px 2px;
   border: none;
   border-radius: 8px;
   background-color: rgba(255, 255, 255, 0.08);

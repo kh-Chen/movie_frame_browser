@@ -86,8 +86,6 @@
         ✕
       </button>
     </div>
-
-    <p v-if="swipeHint && !clipMode" class="swipe-hint">{{ swipeHint }}</p>
   </div>
 </template>
 
@@ -138,10 +136,6 @@ const props = defineProps({
   clipTimeRange: {
     type: String,
     default: ''
-  },
-  swipeHint: {
-    type: String,
-    default: '左右滑动切换帧'
   }
 })
 
@@ -435,22 +429,10 @@ const handleClick = () => {
   backdrop-filter: blur(4px);
 }
 
-.swipe-hint {
-  margin: 8px 0 0;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  opacity: 0.75;
-  pointer-events: none;
-}
-
 @media (max-width: 768px) {
   .time-badge {
     font-size: 0.75rem;
     padding: 4px 8px;
-  }
-
-  .swipe-hint {
-    margin-top: 4px;
   }
 }
 </style>

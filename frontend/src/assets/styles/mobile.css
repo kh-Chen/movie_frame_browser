@@ -59,7 +59,7 @@ body {
   
   /* Reduce padding */
   .page-content {
-    padding: 16px;
+    padding: 16px 2px;
   }
   
   /* Stack layouts on mobile */

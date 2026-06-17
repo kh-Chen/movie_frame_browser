@@ -34,8 +34,20 @@
           :timestamp="currentTimestamp"
           :is-loading="isFrameLoading(currentTimestamp)"
           @step="stepFrame"
-          @preview="showClipPreview"
         />
+      </section>
+
+      <!-- Seek toolbar -->
+      <section class="seek-toolbar">
+        <button type="button" class="toolbar-btn" @click="seekBy(-10)">-10s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(-5)">-5s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(-3)">-3s</button>
+        <button type="button" class="toolbar-btn toolbar-btn--accent" @click="showClipPreview">
+          预览
+        </button>
+        <button type="button" class="toolbar-btn" @click="seekBy(3)">+3s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(5)">+5s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(10)">+10s</button>
       </section>
       
       <!-- Timeline -->
@@ -51,10 +63,6 @@
       
       <!-- Action bar -->
       <section class="action-bar">
-        <button class="action-item action-item--accent" @click="showClipPreview">
-          <span class="action-icon">▶</span>
-          <span class="action-label">预览</span>
-        </button>
         <button class="action-item" @click="goToGallery">
           <span class="action-icon">📁</span>
           <span class="action-label">媒体库</span>
@@ -244,15 +252,19 @@ const loadKeyFrames = async () => {
 }
 
 // Step by one second (design: frame preview advances 1s per step)
-const stepFrame = (direction) => {
+const seekBy = (deltaSec) => {
   if (!movie.value) return
   const next = Math.max(
     0,
-    Math.min(movie.value.duration, currentTimestamp.value + direction * FRAME_STEP_SEC)
+    Math.min(movie.value.duration, currentTimestamp.value + deltaSec)
   )
   if (next === currentTimestamp.value) return
   currentTimestamp.value = next
   schedulePreload(next)
+}
+
+const stepFrame = (direction) => {
+  seekBy(direction * FRAME_STEP_SEC)
 }
 
 // Handle seek
@@ -480,6 +492,51 @@ onUnmounted(() => {
 
 .timeline-section {
   position: relative;
+}
+
+.seek-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.toolbar-btn {
+  flex: 1 1 56px;
+  min-width: 56px;
+  max-width: 72px;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.toolbar-btn:active {
+  transform: scale(0.96);
+}
+
+.toolbar-btn:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.toolbar-btn--accent {
+  background: linear-gradient(135deg, var(--accent), #ff6b8a);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(233, 69, 96, 0.35);
+}
+
+.toolbar-btn--accent:hover {
+  background: linear-gradient(135deg, var(--accent), #ff6b8a);
+  filter: brightness(1.08);
 }
 
 .action-bar {

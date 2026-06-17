@@ -40,16 +40,6 @@
       <div class="time-overlay">
         <span class="time-badge">{{ displayTime }}</span>
       </div>
-
-      <button
-        v-if="showPreviewButton"
-        type="button"
-        class="preview-btn"
-        aria-label="片段预览"
-        @click.stop="emit('preview')"
-      >
-        预览
-      </button>
     </div>
 
     <p v-if="swipeHint" class="swipe-hint">{{ swipeHint }}</p>
@@ -76,17 +66,13 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  showPreviewButton: {
-    type: Boolean,
-    default: true
-  },
   swipeHint: {
     type: String,
     default: '左右滑动切换帧'
   }
 })
 
-const emit = defineEmits(['click', 'preview', 'step'])
+const emit = defineEmits(['click', 'step'])
 
 const frameImg = ref(null)
 const currentSrc = ref(null)
@@ -311,28 +297,6 @@ const handleClick = () => {
   backdrop-filter: blur(4px);
 }
 
-.preview-btn {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  z-index: 2;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #ff6b8a);
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  box-shadow: 0 2px 12px rgba(233, 69, 96, 0.45);
-  transition: transform 0.15s ease, opacity 0.15s ease;
-}
-
-.preview-btn:active {
-  transform: scale(0.96);
-}
-
 .swipe-hint {
   margin: 8px 0 0;
   font-size: 0.75rem;
@@ -345,12 +309,6 @@ const handleClick = () => {
   .time-badge {
     font-size: 0.75rem;
     padding: 4px 8px;
-  }
-
-  .preview-btn {
-    bottom: 12px;
-    left: 12px;
-    padding: 7px 12px;
   }
 
   .swipe-hint {

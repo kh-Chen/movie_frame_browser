@@ -74,7 +74,7 @@
         <div v-else class="media-grid clips-grid">
           <div
             v-for="clip in clips"
-            :key="`${clip.timestamp}-${clip.window}`"
+            :key="`${clip.timestamp}`"
             class="media-card clip-card"
             @click="openClip(clip)"
           >
@@ -162,9 +162,10 @@ const formatClipRange = (clip) => {
   if (clip.startTime != null && clip.endTime != null) {
     return `${formatTimeShort(clip.startTime)} ~ ${formatTimeShort(clip.endTime)}`
   }
-  const w = clip.window ?? 1.5
-  const start = Math.max(0, clip.timestamp - w)
-  const end = clip.timestamp + w
+  const seekBack = 1
+  const seekForward = 5
+  const start = Math.max(0, clip.timestamp - seekBack)
+  const end = clip.timestamp + seekForward
   return `${formatTimeShort(start)} ~ ${formatTimeShort(end)}`
 }
 

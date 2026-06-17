@@ -32,26 +32,24 @@ function getFramePath(movieId, timestamp) {
  * Get preview clip path (MP4, browser-playable)
  * @param {string} movieId
  * @param {number} timestamp - Center timestamp
- * @param {number} window - Seconds before/after center
  */
-function getClipPath(movieId, timestamp, window = config.frame.defaultClipWindow) {
+function getClipPath(movieId, timestamp) {
   const ts = Math.round(timestamp * 1000) / 1000;
-  const w = Math.round(window * 10) / 10;
   const movieClipDir = path.join(config.paths.clips, movieId);
-  return path.join(movieClipDir, `t${ts}_w${w}.mp4`);
+  return path.join(movieClipDir, `t${ts}.mp4`);
 }
 
-function getClipMetaPath(movieId, timestamp, window = config.frame.defaultClipWindow) {
-  return getClipPath(movieId, timestamp, window).replace(/\.mp4$/, '.json');
+function getClipMetaPath(movieId, timestamp) {
+  return getClipPath(movieId, timestamp).replace(/\.mp4$/, '.json');
 }
 
-async function saveClipMeta(movieId, timestamp, window, meta) {
-  const metaPath = getClipMetaPath(movieId, timestamp, window);
+async function saveClipMeta(movieId, timestamp, meta) {
+  const metaPath = getClipMetaPath(movieId, timestamp);
   await fs.writeFile(metaPath, JSON.stringify(meta));
 }
 
-async function readClipMeta(movieId, timestamp, window) {
-  const metaPath = getClipMetaPath(movieId, timestamp, window);
+async function readClipMeta(movieId, timestamp) {
+  const metaPath = getClipMetaPath(movieId, timestamp);
   try {
     const data = await fs.readFile(metaPath, 'utf8');
     return JSON.parse(data);
@@ -384,12 +382,12 @@ async function listCachedFrames(movieId) {
 /**
  * List cached preview clips for a movie
  * @param {string} movieId
- * @returns {Promise<Array<{timestamp: number, window: number, size: number, createdAt: string}>>}
+ * @returns {Promise<Array<{timestamp: number, size: number, createdAt: string}>>}
  */
 async function listCachedClips(movieId) {
   const dir = path.join(config.paths.clips, movieId);
   const clips = [];
-  const clipPattern = /^t([\d.]+)_w([\d.]+)\.mp4$/;
+  const clipPattern = /^t([\d.]+)(?:_w[\d.]+)?\.mp4$/;
 
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -399,13 +397,11 @@ async function listCachedClips(movieId) {
       if (!match) continue;
 
       const timestamp = parseFloat(match[1]);
-      const window = parseFloat(match[2]);
       const fullPath = path.join(dir, entry.name);
       const stat = await fs.stat(fullPath);
 
       clips.push({
         timestamp,
-        window,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
       });

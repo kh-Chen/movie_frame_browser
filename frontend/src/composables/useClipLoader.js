@@ -2,7 +2,9 @@ import { ref, computed, onUnmounted } from 'vue'
 import { formatTimeShort } from '../utils/formatTime'
 import { useMovieApi } from './useMovieApi'
 
-const PREVIEW_WINDOW_SEC = 1.5
+const CLIP_SEEK_BACK_SEC = 1
+const CLIP_SEEK_FORWARD_SEC = 5
+const CLIP_CONTINUE_OFFSET_SEC = 1
 
 export function useClipLoader(movieId) {
   const { getClipUrl, getFrameUrl, getTaskStatus } = useMovieApi()
@@ -23,12 +25,12 @@ export function useClipLoader(movieId) {
   const getNextTimestamp = (movieDuration) => {
     let end = segmentEnd.value
     if (end == null && activeTimestamp.value != null) {
-      end = activeTimestamp.value + PREVIEW_WINDOW_SEC
+      end = activeTimestamp.value + CLIP_SEEK_FORWARD_SEC
     }
     if (end == null) return null
-    if (movieDuration != null && end >= movieDuration - 0.05) return null
-    // Center next clip so it starts at previous end (no overlap)
-    return end + PREVIEW_WINDOW_SEC
+    const next = Math.round((end + CLIP_CONTINUE_OFFSET_SEC) * 1000) / 1000
+    if (movieDuration != null && next > movieDuration) return null
+    return next
   }
 
   const timeRange = computed(() => {
@@ -36,8 +38,8 @@ export function useClipLoader(movieId) {
       return `${formatTimeShort(segmentStart.value)} ~ ${formatTimeShort(segmentEnd.value)}`
     }
     if (activeTimestamp.value == null) return ''
-    const start = activeTimestamp.value - PREVIEW_WINDOW_SEC
-    const end = activeTimestamp.value + PREVIEW_WINDOW_SEC
+    const start = activeTimestamp.value - CLIP_SEEK_BACK_SEC
+    const end = activeTimestamp.value + CLIP_SEEK_FORWARD_SEC
     return `${formatTimeShort(Math.max(0, start))} ~ ${formatTimeShort(end)}`
   })
 
@@ -85,7 +87,7 @@ export function useClipLoader(movieId) {
 
     const frames = []
     const interval = 1.5
-    const start = timestamp - PREVIEW_WINDOW_SEC
+    const start = timestamp - CLIP_SEEK_BACK_SEC
 
     for (let i = 0; i < 5; i++) {
       const t = start + i * interval

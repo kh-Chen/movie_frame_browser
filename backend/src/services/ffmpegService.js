@@ -38,21 +38,42 @@ function roundSeekTime(seconds) {
   return Math.round(seconds * 1000) / 1000;
 }
 
-/** Compute center ± window segment, capped by max duration. */
-function computePreviewSegment(timestamp, window, videoDuration, maxDuration) {
-  const effectiveWindow = Math.min(window, config.frame.defaultClipWindow);
+/** Compute preview segment: back seek + keyframe, forward seek + keyframe. */
+async function computePreviewSegment(videoPath, timestamp, videoDuration = null) {
   const center = roundSeekTime(timestamp);
-  const startTime = roundSeekTime(Math.max(0, center - effectiveWindow));
-  let endTime = roundSeekTime(center + effectiveWindow);
+  const seekBack = config.frame.defaultClipSeekBack;
+  const seekForward = config.frame.defaultClipSeekForward;
+
+  const startTarget = roundSeekTime(Math.max(0, center - seekBack));
+  let endTarget = roundSeekTime(center + seekForward);
+  if (videoDuration != null) {
+    endTarget = roundSeekTime(Math.min(videoDuration, endTarget));
+  }
+
+  const startTime = await findKeyframeBefore(videoPath, startTarget);
+  let endTime = await findKeyframeAfter(videoPath, endTarget, videoDuration);
   if (videoDuration != null) {
     endTime = roundSeekTime(Math.min(videoDuration, endTime));
   }
-  let duration = Math.max(0.1, roundSeekTime(endTime - startTime));
-  duration = Math.min(duration, maxDuration ?? config.frame.defaultClipMaxDuration);
-  return { startTime, duration, center, window: effectiveWindow };
+  if (endTime <= startTime) {
+    endTime = roundSeekTime(Math.min(
+      videoDuration ?? startTime + 0.1,
+      startTime + 0.1
+    ));
+  }
+
+  const duration = Math.max(0.1, roundSeekTime(endTime - startTime));
+  return {
+    startTime,
+    endTime,
+    duration,
+    center,
+    seekBack,
+    seekForward,
+  };
 }
 
-/** Nearest keyframe at or before timestamp (stream-copy seek alignment). */
+/** Nearest keyframe at or before timestamp. */
 async function findKeyframeBefore(videoPath, timestamp) {
   const t = roundSeekTime(timestamp);
   const searchStart = Math.max(0, t - 60);
@@ -83,80 +104,82 @@ async function findKeyframeBefore(videoPath, timestamp) {
   }
 }
 
+/** Nearest keyframe at or after timestamp. */
+async function findKeyframeAfter(videoPath, timestamp, videoDuration = null) {
+  const t = roundSeekTime(timestamp);
+  const searchEnd = videoDuration != null
+    ? roundSeekTime(Math.min(videoDuration, t + 60))
+    : t + 60;
+  const interval = `${t}%@${searchEnd}`;
+
+  try {
+    const { stdout } = await execFileAsync(FFPROBE_PATH, [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-skip_frame', 'nokey',
+      '-show_entries', 'frame=best_effort_timestamp_time',
+      '-of', 'csv=p=0',
+      '-read_intervals', interval,
+      videoPath,
+    ], { maxBuffer: 1024 * 1024 });
+
+    const times = stdout.trim().split('\n')
+      .map((line) => parseFloat(line))
+      .filter((n) => !Number.isNaN(n) && n >= t - 0.001);
+
+    if (times.length === 0) {
+      return t;
+    }
+    return roundSeekTime(Math.min(...times));
+  } catch (error) {
+    logger.warn('Keyframe probe (after) failed, using requested end', { error: error.message });
+    return t;
+  }
+}
+
 /** Resolve actual source timeline bounds from a generated clip file. */
-async function resolveClipSegment(videoPath, clipPath, segment, videoDuration = null) {
-  const { startTime: requestedStart, duration: requestedDuration } = segment;
+async function resolveClipSegment(_videoPath, clipPath, segment, videoDuration = null) {
+  const { startTime, endTime: requestedEndTime } = segment;
   const clipInfo = await getVideoInfo(clipPath);
-  const actualStart = await findKeyframeBefore(videoPath, requestedStart);
-  let actualEnd = roundSeekTime(actualStart + clipInfo.duration);
+  let actualEnd = roundSeekTime(startTime + clipInfo.duration);
   if (videoDuration != null) {
     actualEnd = roundSeekTime(Math.min(videoDuration, actualEnd));
   }
 
   return {
-    startTime: actualStart,
+    startTime,
     endTime: actualEnd,
-    duration: roundSeekTime(Math.max(0.1, actualEnd - actualStart)),
-    requestedStartTime: requestedStart,
-    requestedEndTime: roundSeekTime(requestedStart + requestedDuration),
+    duration: roundSeekTime(Math.max(0.1, actualEnd - startTime)),
+    requestedStartTime: startTime,
+    requestedEndTime,
   };
 }
 
 /**
- * Extract a short MP4 clip for browser playback (stream copy, then ultrafast transcode).
+ * Extract a short MP4 clip for browser playback (stream copy only).
  * @returns {Promise<object>} Actual segment bounds in source video timeline
  */
-async function generatePreviewClip(videoPath, timestamp, window, outputPath, options = {}) {
-  const { videoDuration = null, width = config.frame.defaultClipWidth } = options;
-  const segment = computePreviewSegment(
-    timestamp,
-    window,
-    videoDuration,
-    config.frame.defaultClipMaxDuration
-  );
+async function generatePreviewClip(videoPath, timestamp, outputPath, options = {}) {
+  const { videoDuration = null } = options;
+  const segment = await computePreviewSegment(videoPath, timestamp, videoDuration);
   const { startTime, duration } = segment;
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const transcodeScale = width > 0
-    ? `scale=${width}:-2:flags=fast_bilinear`
-    : 'scale=480:-2:flags=fast_bilinear';
-
-  try {
-    await executeFfmpegCommand('Preview clip (copy)', () =>
-      ffmpeg(videoPath, { timeout: clipTimeoutSec })
-        .inputOptions(['-ss', String(startTime)])
-        .outputOptions([
-          '-t', String(duration),
-          '-an',
-          '-sn',
-          '-dn',
-          '-c', 'copy',
-          '-movflags', '+faststart',
-          '-avoid_negative_ts', 'make_zero',
-        ])
-        .output(outputPath)
-    );
-  } catch (copyError) {
-    logger.warn('Preview clip stream-copy failed, using ultrafast transcode', {
-      error: copyError.message,
-    });
-    await executeFfmpegCommand('Preview clip (transcode)', () =>
-      ffmpeg(videoPath, { timeout: clipTimeoutSec })
-        .inputOptions(['-ss', String(startTime)])
-        .outputOptions([
-          '-t', String(duration),
-          '-an',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '28',
-          '-vf', transcodeScale,
-          '-pix_fmt', 'yuv420p',
-          '-movflags', '+faststart',
-        ])
-        .output(outputPath)
-    );
-  }
+  await executeFfmpegCommand('Preview clip (copy)', () =>
+    ffmpeg(videoPath, { timeout: clipTimeoutSec })
+      .inputOptions(['-ss', String(startTime)])
+      .outputOptions([
+        '-t', String(duration),
+        '-an',
+        '-sn',
+        '-dn',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        '-avoid_negative_ts', 'make_zero',
+      ])
+      .output(outputPath)
+  );
 
   return resolveClipSegment(videoPath, outputPath, segment, videoDuration);
 }

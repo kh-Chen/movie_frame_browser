@@ -24,15 +24,14 @@ function setClipMetaHeaders(res, meta) {
   res.set('X-Clip-End', String(meta.endTime));
 }
 
-async function ensureClipMeta(movie, timestamp, clipWindow, clipPath) {
-  let meta = await storageService.readClipMeta(movie.id, timestamp, clipWindow);
+async function ensureClipMeta(movie, timestamp, clipPath) {
+  let meta = await storageService.readClipMeta(movie.id, timestamp);
   if (meta) return meta;
 
-  const segment = ffmpegService.computePreviewSegment(
+  const segment = await ffmpegService.computePreviewSegment(
+    movie.originalPath,
     timestamp,
-    clipWindow,
-    movie.duration,
-    config.frame.defaultClipMaxDuration
+    movie.duration
   );
   meta = await ffmpegService.resolveClipSegment(
     movie.originalPath,
@@ -40,7 +39,7 @@ async function ensureClipMeta(movie, timestamp, clipWindow, clipPath) {
     segment,
     movie.duration
   );
-  await storageService.saveClipMeta(movie.id, timestamp, clipWindow, meta);
+  await storageService.saveClipMeta(movie.id, timestamp, meta);
   return meta;
 }
 
@@ -283,12 +282,12 @@ async function getFrame(req, res, next) {
 }
 
 /**
- * Generate or get preview clip (MP4, ~3s)
+ * Generate or get preview clip (MP4)
  */
 async function getClip(req, res, next) {
   try {
     const { id } = req.params;
-    const { t, window: windowParam } = req.query;
+    const { t } = req.query;
 
     const movie = await cacheService.getMovie(id);
     if (!movie) {
@@ -316,12 +315,11 @@ async function getClip(req, res, next) {
       });
     }
 
-    const clipWindow = parseFloat(windowParam) || config.frame.defaultClipWindow;
-    const clipPath = storageService.getClipPath(id, timestamp, clipWindow);
+    const clipPath = storageService.getClipPath(id, timestamp);
     const exists = await storageService.fileExists(clipPath);
 
     if (exists) {
-      const meta = await ensureClipMeta(movie, timestamp, clipWindow, clipPath);
+      const meta = await ensureClipMeta(movie, timestamp, clipPath);
       setClipMetaHeaders(res, meta);
       res.type('mp4');
       return res.sendFile(clipPath);
@@ -350,7 +348,6 @@ async function getClip(req, res, next) {
       params: {
         moviePath: movie.originalPath,
         timestamp,
-        window: clipWindow,
         videoDuration: movie.duration,
       },
       execute: async ({ onProgress, params }) => {
@@ -358,11 +355,10 @@ async function getClip(req, res, next) {
         const segment = await ffmpegService.generatePreviewClip(
           params.moviePath,
           params.timestamp,
-          params.window,
           clipPath,
           { videoDuration: params.videoDuration }
         );
-        await storageService.saveClipMeta(id, timestamp, clipWindow, segment);
+        await storageService.saveClipMeta(id, timestamp, segment);
         onProgress(100, '片段生成完成');
       },
     });
@@ -431,17 +427,16 @@ async function listCachedClips(req, res, next) {
 
     const cached = await storageService.listCachedClips(id);
     const clips = await Promise.all(cached.map(async (clip) => {
-      const clipPath = storageService.getClipPath(id, clip.timestamp, clip.window);
-      const meta = await ensureClipMeta(movie, clip.timestamp, clip.window, clipPath);
+      const clipPath = storageService.getClipPath(id, clip.timestamp);
+      const meta = await ensureClipMeta(movie, clip.timestamp, clipPath);
 
       return {
         timestamp: clip.timestamp,
-        window: clip.window,
         startTime: meta.startTime,
         endTime: meta.endTime,
         duration: meta.duration,
-        url: `/api/movies/${id}/clip?t=${clip.timestamp}&window=${clip.window}`,
-        staticUrl: staticUrl('clips', id, `t${clip.timestamp}_w${clip.window}.mp4`),
+        url: `/api/movies/${id}/clip?t=${clip.timestamp}`,
+        staticUrl: staticUrl('clips', id, `t${clip.timestamp}.mp4`),
         size: clip.size,
         createdAt: clip.createdAt,
       };

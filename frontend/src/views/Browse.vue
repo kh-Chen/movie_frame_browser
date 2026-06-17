@@ -207,7 +207,6 @@ const {
   clipUrl,
   hasError: clipHasError,
   timeRange: clipTimeRange,
-  segmentEnd,
   getNextTimestamp,
   loadClip,
   preloadNextClip,
@@ -347,10 +346,9 @@ const handleClipEnded = () => {
 
 const continueClipSegment = async () => {
   if (!movie.value) return
-  const junction = segmentEnd.value
   const nextTs = await continueToNextClip(movie.value.duration)
   if (nextTs == null) return
-  currentTimestamp.value = junction ?? nextTs
+  currentTimestamp.value = nextTs
   schedulePreload(nextTs)
 }
 

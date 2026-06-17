@@ -84,9 +84,9 @@ const config = {
     defaultInterval: parseInt(process.env.DEFAULT_FRAME_INTERVAL) || 60,
     defaultWidth: parseInt(process.env.DEFAULT_FRAME_WIDTH) || 1280,
     defaultQuality: parseInt(process.env.DEFAULT_FRAME_QUALITY) || 75,
-    defaultClipWindow: parseFloat(process.env.CLIP_WINDOW) || 1.5,
-    defaultClipMaxDuration: parseFloat(process.env.CLIP_MAX_DURATION) || 3,
-    defaultClipWidth: parseInt(process.env.CLIP_WIDTH, 10) || 480,
+    defaultClipSeekBack: parseFloat(process.env.CLIP_SEEK_BACK) || 1,
+    defaultClipSeekForward: parseFloat(process.env.CLIP_SEEK_FORWARD) || 5,
+    defaultClipContinueOffset: parseFloat(process.env.CLIP_CONTINUE_OFFSET) || 1,
   },
 
   // Task queue settings

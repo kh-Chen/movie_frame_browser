@@ -18,6 +18,18 @@ export function useClipLoader(movieId) {
   const activeTimestamp = ref(null)
 
   let pollTimer = null
+  let preloadCache = null
+
+  const getNextTimestamp = (movieDuration) => {
+    let end = segmentEnd.value
+    if (end == null && activeTimestamp.value != null) {
+      end = activeTimestamp.value + PREVIEW_WINDOW_SEC
+    }
+    if (end == null) return null
+    if (movieDuration != null && end >= movieDuration - 0.05) return null
+    // Center next clip so it starts at previous end (no overlap)
+    return end + PREVIEW_WINDOW_SEC
+  }
 
   const timeRange = computed(() => {
     if (segmentStart.value != null && segmentEnd.value != null) {
@@ -28,27 +40,6 @@ export function useClipLoader(movieId) {
     const end = activeTimestamp.value + PREVIEW_WINDOW_SEC
     return `${formatTimeShort(Math.max(0, start))} ~ ${formatTimeShort(end)}`
   })
-
-  const applyClipMetaHeaders = (response) => {
-    const start = response.headers.get('X-Clip-Start')
-    const end = response.headers.get('X-Clip-End')
-    if (start == null || end == null) return
-    const startNum = parseFloat(start)
-    const endNum = parseFloat(end)
-    if (!Number.isNaN(startNum) && !Number.isNaN(endNum)) {
-      segmentStart.value = startNum
-      segmentEnd.value = endNum
-    }
-  }
-
-  const fetchClipMeta = async (url) => {
-    try {
-      const response = await fetch(url, { method: 'HEAD' })
-      applyClipMetaHeaders(response)
-    } catch {
-      // Non-fatal
-    }
-  }
 
   const waitForClip = (url) => {
     return new Promise((resolve, reject) => {
@@ -113,11 +104,73 @@ export function useClipLoader(movieId) {
     clipUrl.value = null
   }
 
+  const clearPreloadCache = () => {
+    if (preloadCache?.clipUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(preloadCache.clipUrl)
+    }
+    preloadCache = null
+  }
+
+  const applyPreloadedClip = (timestamp) => {
+    if (!preloadCache || preloadCache.timestamp !== timestamp) return false
+    revokeClipUrl()
+    activeTimestamp.value = timestamp
+    clipUrl.value = preloadCache.clipUrl
+    segmentStart.value = preloadCache.segmentStart
+    segmentEnd.value = preloadCache.segmentEnd
+    preloadCache = null
+    hasError.value = false
+    loadingProgress.value = 100
+    return true
+  }
+
+  const fetchClipFromServer = async (timestamp) => {
+    const url = getClipUrl(movieId, timestamp)
+    let resolvedUrl = null
+    let start = null
+    let end = null
+
+    const response = await fetch(url, {
+      headers: { Accept: 'video/mp4, application/json' },
+    })
+
+    const contentType = response.headers.get('content-type') || ''
+
+    if (response.ok && (contentType.includes('video/mp4') || contentType.includes('octet-stream'))) {
+      const startHeader = response.headers.get('X-Clip-Start')
+      const endHeader = response.headers.get('X-Clip-End')
+      if (startHeader != null && endHeader != null) {
+        start = parseFloat(startHeader)
+        end = parseFloat(endHeader)
+      }
+      resolvedUrl = URL.createObjectURL(await response.blob())
+    } else if (response.status === 202) {
+      const data = await response.json()
+      resolvedUrl = await pollClipTask(data.taskId, url)
+      try {
+        const metaResponse = await fetch(`${url}&cache=${Date.now()}`, { method: 'HEAD' })
+        const startHeader = metaResponse.headers.get('X-Clip-Start')
+        const endHeader = metaResponse.headers.get('X-Clip-End')
+        if (startHeader != null && endHeader != null) {
+          start = parseFloat(startHeader)
+          end = parseFloat(endHeader)
+        }
+      } catch {
+        // Non-fatal
+      }
+    } else {
+      throw new Error(`Unexpected clip response: ${response.status}`)
+    }
+
+    return { clipUrl: resolvedUrl, segmentStart: start, segmentEnd: end }
+  }
+
   const reset = () => {
     if (pollTimer) {
       clearTimeout(pollTimer)
       pollTimer = null
     }
+    clearPreloadCache()
     revokeClipUrl()
     isLoading.value = false
     loadingProgress.value = 0
@@ -134,6 +187,11 @@ export function useClipLoader(movieId) {
   }
 
   const loadClip = async (timestamp) => {
+    if (applyPreloadedClip(timestamp)) {
+      isLoading.value = false
+      return
+    }
+
     isLoading.value = true
     hasError.value = false
     loadingProgress.value = 0
@@ -144,37 +202,43 @@ export function useClipLoader(movieId) {
     revokeClipUrl()
     fallbackFrames.value = []
 
-    const url = getClipUrl(movieId, timestamp)
-
     try {
-      const response = await fetch(url, {
-        headers: { Accept: 'video/mp4, application/json' },
-      })
-
-      const contentType = response.headers.get('content-type') || ''
-
-      if (response.ok && (contentType.includes('video/mp4') || contentType.includes('octet-stream'))) {
-        applyClipMetaHeaders(response)
-        clipUrl.value = URL.createObjectURL(await response.blob())
-        loadingProgress.value = 100
-        return
+      const data = await fetchClipFromServer(timestamp)
+      clipUrl.value = data.clipUrl
+      if (data.segmentStart != null && data.segmentEnd != null) {
+        segmentStart.value = data.segmentStart
+        segmentEnd.value = data.segmentEnd
       }
-
-      if (response.status === 202) {
-        const data = await response.json()
-        clipUrl.value = await pollClipTask(data.taskId, url)
-        await fetchClipMeta(`${url}&cache=${Date.now()}`)
-        loadingProgress.value = 100
-        return
-      }
-
-      throw new Error(`Unexpected clip response: ${response.status}`)
+      loadingProgress.value = 100
     } catch (error) {
       console.error('Failed to load clip:', error)
       loadFallbackFrames(timestamp)
     } finally {
       isLoading.value = false
     }
+  }
+
+  const preloadNextClip = async (movieDuration) => {
+    const nextTs = getNextTimestamp(movieDuration)
+    if (nextTs == null) return
+    if (preloadCache?.timestamp === nextTs) return
+
+    clearPreloadCache()
+
+    try {
+      const data = await fetchClipFromServer(nextTs)
+      preloadCache = { timestamp: nextTs, ...data }
+    } catch {
+      // Preload is best-effort
+    }
+  }
+
+  const continueToNextClip = async (movieDuration) => {
+    const nextTs = getNextTimestamp(movieDuration)
+    if (nextTs == null) return null
+
+    await loadClip(nextTs)
+    return nextTs
   }
 
   onUnmounted(reset)
@@ -187,7 +251,12 @@ export function useClipLoader(movieId) {
     hasError,
     fallbackFrames,
     timeRange,
+    segmentStart,
+    segmentEnd,
+    getNextTimestamp,
     loadClip,
+    preloadNextClip,
+    continueToNextClip,
     reset,
     markError,
   }

@@ -31,11 +31,28 @@
           class="clip-video fade-in"
           controls
           autoplay
-          loop
           muted
           playsinline
           @error="emit('clip-error')"
+          @ended="onClipEnded"
         />
+
+        <div
+          v-if="clipEnded && clipUrl && !clipError && !clipLoading"
+          class="clip-ended-overlay"
+        >
+          <button type="button" class="clip-action-btn" @click.stop="replayClip">
+            重播
+          </button>
+          <button
+            v-if="canContinueClip"
+            type="button"
+            class="clip-action-btn clip-action-btn--primary"
+            @click.stop="emit('clip-continue')"
+          >
+            下一段
+          </button>
+        </div>
 
         <div v-else-if="clipError" class="frame-error">
           <span class="error-icon">⚠️</span>
@@ -90,7 +107,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { formatTime } from '../utils/formatTime'
 
 const SWIPE_THRESHOLD_PX = 48
@@ -136,13 +153,18 @@ const props = defineProps({
   clipTimeRange: {
     type: String,
     default: ''
+  },
+  canContinueClip: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['click', 'step', 'exit-clip', 'clip-error'])
+const emit = defineEmits(['click', 'step', 'exit-clip', 'clip-error', 'clip-ended', 'clip-continue'])
 
 const frameImg = ref(null)
 const clipVideoRef = ref(null)
+const clipEnded = ref(false)
 const currentSrc = ref(null)
 const imageLoaded = ref(false)
 const hasError = ref(false)
@@ -164,6 +186,36 @@ watch(() => props.src, (newSrc) => {
     currentSrc.value = null
   }
 }, { immediate: true })
+
+watch(() => props.clipUrl, () => {
+  clipEnded.value = false
+})
+
+watch(
+  () => [props.clipLoading, props.clipUrl, props.clipMode],
+  ([loading, url, mode]) => {
+    if (!loading && url && mode) {
+      nextTick(() => playClipVideo())
+    }
+  }
+)
+
+const playClipVideo = () => {
+  const video = clipVideoRef.value
+  if (!video) return
+  video.currentTime = 0
+  video.play().catch(() => {})
+}
+
+const onClipEnded = () => {
+  clipEnded.value = true
+  emit('clip-ended')
+}
+
+const replayClip = () => {
+  clipEnded.value = false
+  playClipVideo()
+}
 
 const recordStart = (clientX, clientY) => {
   startX = clientX
@@ -293,6 +345,48 @@ const handleClick = () => {
   object-fit: contain;
   opacity: 1;
   background: #000;
+}
+
+.clip-ended-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 1;
+}
+
+.clip-action-btn {
+  min-width: 88px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.clip-action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+.clip-action-btn:active {
+  transform: scale(0.96);
+}
+
+.clip-action-btn--primary {
+  background: linear-gradient(135deg, var(--accent), #ff6b8a);
+  color: #fff;
+}
+
+.clip-action-btn--primary:hover {
+  filter: brightness(1.08);
 }
 
 .clip-loading {

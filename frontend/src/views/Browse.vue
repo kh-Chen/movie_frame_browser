@@ -40,9 +40,12 @@
           :clip-loading-progress="clipLoadingProgress"
           :clip-error="clipHasError"
           :clip-time-range="clipTimeRange"
+          :can-continue-clip="canContinueClip"
           @step="stepFrame"
           @exit-clip="stopClipPreview"
           @clip-error="markClipError"
+          @clip-ended="handleClipEnded"
+          @clip-continue="continueClipSegment"
         />
       </section>
 
@@ -204,7 +207,11 @@ const {
   clipUrl,
   hasError: clipHasError,
   timeRange: clipTimeRange,
+  segmentEnd,
+  getNextTimestamp,
   loadClip,
+  preloadNextClip,
+  continueToNextClip,
   reset: resetClip,
   markError: markClipError,
 } = useClipLoader(movieId.value)
@@ -228,6 +235,11 @@ const progressText = computed(() => {
   if (!movie.value) return ''
   const percent = Math.round((currentTimestamp.value / movie.value.duration) * 100)
   return `${formatTimeShort(currentTimestamp.value)} / ${formatTimeShort(movie.value.duration)} (${percent}%)`
+})
+
+const canContinueClip = computed(() => {
+  if (!movie.value) return false
+  return getNextTimestamp(movie.value.duration) != null
 })
 
 // Load movie
@@ -326,6 +338,20 @@ const toggleClipPreview = async () => {
   }
   isClipMode.value = true
   await loadClip(currentTimestamp.value)
+}
+
+const handleClipEnded = () => {
+  if (!movie.value || !canContinueClip.value) return
+  preloadNextClip(movie.value.duration)
+}
+
+const continueClipSegment = async () => {
+  if (!movie.value) return
+  const junction = segmentEnd.value
+  const nextTs = await continueToNextClip(movie.value.duration)
+  if (nextTs == null) return
+  currentTimestamp.value = junction ?? nextTs
+  schedulePreload(nextTs)
 }
 
 // Go to gallery

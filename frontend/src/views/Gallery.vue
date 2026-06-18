@@ -47,14 +47,18 @@
             v-for="frame in frames"
             :key="frame.timestamp"
             class="media-card"
+            :class="{ 'media-card--keyframe': frame.isKeyframe }"
             @click="openFrame(frame)"
           >
-            <img
-              :src="getFrameUrl(movieId, frame.timestamp, 320)"
-              :alt="`Frame at ${formatTime(frame.timestamp)}`"
-              class="media-thumb"
-              loading="lazy"
-            />
+            <div class="thumb-wrap">
+              <img
+                :src="getFrameUrl(movieId, frame.timestamp, 320)"
+                :alt="`Frame at ${formatTime(frame.timestamp)}`"
+                class="media-thumb"
+                loading="lazy"
+              />
+              <span v-if="frame.isKeyframe" class="keyframe-badge">关键帧</span>
+            </div>
             <div class="media-info">
               <span class="media-time">{{ formatTime(frame.timestamp) }}</span>
               <span class="media-size">{{ formatSize(frame.size) }}</span>
@@ -356,6 +360,27 @@ onMounted(() => {
 
 .media-card:active {
   transform: scale(0.98);
+}
+
+.media-card--keyframe {
+  border-color: rgba(233, 69, 96, 0.45);
+}
+
+.thumb-wrap {
+  position: relative;
+}
+
+.keyframe-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(233, 69, 96, 0.9);
+  color: #fff;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .media-thumb {

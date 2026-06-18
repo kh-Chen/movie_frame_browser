@@ -13,8 +13,8 @@
         <button class="action-btn" @click="showInfo = true" title="电影信息">
           <span>ℹ️</span>
         </button>
-        <button class="action-btn danger" @click="confirmDelete" title="删除电影">
-          <span>🗑️</span>
+        <button class="action-btn keyframe-btn" @click="handleExtractKeyframes" :disabled="isExtracting" title="抽取所有关键帧">
+          <span>{{ isExtracting ? '⏳' : '🎞️' }}</span>
         </button>
       </div>
     </header>
@@ -136,12 +136,46 @@
                 <span class="info-label">帧间隔</span>
                 <span class="info-value">{{ movie?.frameInterval || 60 }}秒</span>
               </div>
+              <div class="info-row">
+                <span class="info-label">关键帧采集</span>
+                <span class="info-value">{{ keyframesStatusText }}</span>
+              </div>
             </div>
           </div>
         </div>
       </Transition>
     </Teleport>
     
+    <!-- Keyframe already extracted -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showExtractedNotice" class="confirm-overlay" @click.self="showExtractedNotice = false">
+          <div class="confirm-modal">
+            <h3>已完成采集</h3>
+            <p>该视频的所有关键帧已采集完成（共 {{ movie?.keyframesCount || 0 }} 帧），无需重复采集。</p>
+            <div class="confirm-actions">
+              <button class="cancel-btn" @click="showExtractedNotice = false">知道了</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- Keyframe extraction started -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showExtractStarted" class="confirm-overlay" @click.self="showExtractStarted = false">
+          <div class="confirm-modal">
+            <h3>任务已加入队列</h3>
+            <p>关键帧采集任务已开始，可在首页的任务队列中查看进度。</p>
+            <div class="confirm-actions">
+              <button class="cancel-btn" @click="showExtractStarted = false">知道了</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Delete confirmation -->
     <Teleport to="body">
       <Transition name="fade">
@@ -190,7 +224,7 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const store = useMovieStore()
-const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl, getKeyframe } = useMovieApi()
+const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl, getKeyframe, extractAllKeyframes } = useMovieApi()
 const { preloadFrames, isLoading: isFrameLoading } = useFrameLoader()
 
 // State
@@ -216,7 +250,10 @@ const {
 } = useClipLoader(movieId.value)
 const showInfo = ref(false)
 const showDeleteConfirm = ref(false)
+const showExtractedNotice = ref(false)
+const showExtractStarted = ref(false)
 const isDeleting = ref(false)
+const isExtracting = ref(false)
 
 // Preload state
 let preloadTimer = null
@@ -238,6 +275,15 @@ const progressText = computed(() => {
 const canContinueClip = computed(() => {
   if (!movie.value) return false
   return getNextTimestamp(movie.value.duration) != null
+})
+
+const keyframesStatusText = computed(() => {
+  if (!movie.value) return '未知'
+  if (movie.value.keyframesExtracted) {
+    const count = movie.value.keyframesCount || 0
+    return `已完成 (${count} 帧)`
+  }
+  return '未采集'
 })
 
 // Load movie
@@ -328,7 +374,7 @@ const schedulePreload = (timestamp) => {
 }
 
 const handleKeydown = (event) => {
-  if (showInfo.value || showDeleteConfirm.value) return
+  if (showInfo.value || showDeleteConfirm.value || showExtractedNotice.value || showExtractStarted.value) return
   if (isClipMode.value) return
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
@@ -381,6 +427,37 @@ const goBack = () => {
 // Confirm delete
 const confirmDelete = () => {
   showDeleteConfirm.value = true
+}
+
+const handleExtractKeyframes = async () => {
+  if (!movie.value || isExtracting.value) return
+
+  if (movie.value.keyframesExtracted) {
+    showExtractedNotice.value = true
+    return
+  }
+
+  isExtracting.value = true
+  try {
+    await extractAllKeyframes(movieId.value)
+    showExtractStarted.value = true
+  } catch (error) {
+    if (error.response?.status === 409) {
+      movie.value = {
+        ...movie.value,
+        keyframesExtracted: true,
+        keyframesCount: error.response.data?.keyframesCount ?? movie.value.keyframesCount,
+        keyframesExtractedAt: error.response.data?.keyframesExtractedAt ?? movie.value.keyframesExtractedAt,
+      }
+      showExtractedNotice.value = true
+    } else if (error.response?.status === 202) {
+      showExtractStarted.value = true
+    } else {
+      console.error('Failed to start keyframe extraction:', error)
+    }
+  } finally {
+    isExtracting.value = false
+  }
 }
 
 // Delete movie
@@ -494,6 +571,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.action-btn.keyframe-btn:hover {
+  background-color: rgba(233, 69, 96, 0.3);
+}
+
+.action-btn.keyframe-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .action-btn.danger:hover {

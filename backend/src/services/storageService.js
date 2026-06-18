@@ -28,6 +28,46 @@ function getFramePath(movieId, timestamp) {
   return path.join(movieFrameDir, `${timestamp}.jpg`);
 }
 
+function getFrameMetaPath(movieId, timestamp) {
+  return getFramePath(movieId, timestamp).replace(/\.jpg$/, '.meta.json');
+}
+
+function getKeyframesManifestPath(movieId) {
+  return path.join(config.paths.frames, movieId, 'keyframes.json');
+}
+
+async function saveFrameMeta(movieId, timestamp, meta) {
+  const metaPath = getFrameMetaPath(movieId, timestamp);
+  await fs.mkdir(path.dirname(metaPath), { recursive: true });
+  await fs.writeFile(metaPath, JSON.stringify(meta));
+}
+
+async function readFrameMeta(movieId, timestamp) {
+  const metaPath = getFrameMetaPath(movieId, timestamp);
+  try {
+    const data = await fs.readFile(metaPath, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function saveKeyframesManifest(movieId, data) {
+  const manifestPath = getKeyframesManifestPath(movieId);
+  await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+  await fs.writeFile(manifestPath, JSON.stringify(data));
+}
+
+async function readKeyframesManifest(movieId) {
+  const manifestPath = getKeyframesManifestPath(movieId);
+  try {
+    const data = await fs.readFile(manifestPath, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get preview clip path (MP4, browser-playable)
  * @param {string} movieId
@@ -353,6 +393,8 @@ async function deleteMovieCache(movieId) {
 async function listCachedFrames(movieId) {
   const dir = path.join(config.paths.frames, movieId);
   const frames = [];
+  const manifest = await readKeyframesManifest(movieId);
+  const keyframeSet = new Set(manifest?.timestamps || []);
 
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -363,10 +405,17 @@ async function listCachedFrames(movieId) {
 
       const fullPath = path.join(dir, entry.name);
       const stat = await fs.stat(fullPath);
+      let isKeyframe = keyframeSet.has(timestamp);
+      if (!isKeyframe) {
+        const meta = await readFrameMeta(movieId, timestamp);
+        isKeyframe = meta?.isKeyframe === true;
+      }
+
       frames.push({
         timestamp,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
+        isKeyframe,
       });
     }
   } catch (error) {
@@ -481,6 +530,12 @@ module.exports = {
   // Path getters
   getCoverPath,
   getFramePath,
+  getFrameMetaPath,
+  getKeyframesManifestPath,
+  saveFrameMeta,
+  readFrameMeta,
+  saveKeyframesManifest,
+  readKeyframesManifest,
   getClipPath,
   getClipMetaPath,
   saveClipMeta,

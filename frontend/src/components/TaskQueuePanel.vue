@@ -140,6 +140,7 @@ const TASK_TYPE_LABELS = {
   movie_process: '电影处理',
   clip_generate: '片段生成',
   frame_extract: '帧提取',
+  keyframe_extract: '关键帧采集',
 }
 
 const PRIORITY_LABELS = {

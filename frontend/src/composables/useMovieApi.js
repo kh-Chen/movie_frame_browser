@@ -112,6 +112,10 @@ export const useMovieApi = () => {
     return api.get(`/movies/${id}/clips`)
   }
 
+  const extractAllKeyframes = async (id) => {
+    return api.post(`/movies/${id}/keyframes/extract`)
+  }
+
   return {
     getMovies,
     getMovie,
@@ -131,5 +135,6 @@ export const useMovieApi = () => {
     cancelTask,
     getCachedFrames,
     getCachedClips,
+    extractAllKeyframes,
   }
 }

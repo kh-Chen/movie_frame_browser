@@ -32,6 +32,17 @@ const defaultOptions = {
 
 const ffmpegTimeoutSec = Math.max(30, Math.ceil(config.ffmpeg.timeout / 1000));
 const clipTimeoutSec = Math.min(ffmpegTimeoutSec, Math.max(10, parseInt(process.env.CLIP_FFMPEG_TIMEOUT_SEC, 10) || 20));
+// fluent-ffmpeg timeout is seconds; internally uses setTimeout(timeout * 1000)
+const MAX_FFMPEG_TIMEOUT_SEC = 2147483;
+
+/** Timeout for full-video keyframe batch (seconds). */
+function getBatchKeyframeTimeoutSec(videoDurationSec) {
+  const estimatedSec = Math.ceil(videoDurationSec * 3);
+  return Math.min(
+    MAX_FFMPEG_TIMEOUT_SEC,
+    Math.max(ffmpegTimeoutSec, estimatedSec, 600)
+  );
+}
 
 /** Round seek times to avoid ultra-long decimal timestamps from the timeline. */
 function roundSeekTime(seconds) {
@@ -71,6 +82,25 @@ async function computePreviewSegment(videoPath, timestamp, videoDuration = null)
     seekBack,
     seekForward,
   };
+}
+
+/** Probe all keyframe timestamps across the full video (chunked for long files). */
+async function probeAllKeyframeTimes(videoPath, duration) {
+  const CHUNK_SEC = 600;
+  const allTimes = new Set();
+  let start = 0;
+
+  while (start <= duration + 0.001) {
+    const end = Math.min(duration, start + CHUNK_SEC);
+    const times = await probeKeyframeTimes(videoPath, start, end);
+    for (const t of times) {
+      allTimes.add(roundSeekTime(t));
+    }
+    if (end >= duration) break;
+    start = end + 0.001;
+  }
+
+  return Array.from(allTimes).sort((a, b) => a - b);
 }
 
 /** Probe keyframe timestamps within [startSec, endSec] (seconds from file start). */
@@ -394,6 +424,148 @@ async function extractFrame(videoPath, timestamp, outputPath, options = {}) {
   });
 }
 
+/** Parse ffmpeg timemark "HH:MM:SS.ms" to seconds. */
+function parseTimemark(timemark) {
+  if (!timemark || typeof timemark !== 'string') return 0;
+  const parts = timemark.split(':');
+  if (parts.length < 3) return 0;
+  const seconds = parseFloat(parts[2]);
+  const minutes = parseInt(parts[1], 10);
+  const hours = parseInt(parts[0], 10);
+  if ([seconds, minutes, hours].some((n) => Number.isNaN(n))) return 0;
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+/**
+ * Extract all keyframes in a single ffmpeg pass, then rename to timestamp-based files.
+ * @param {string} videoPath
+ * @param {string} outputDir - Final frame directory (frames/{movieId})
+ * @param {object} options
+ * @param {string} options.tempDir - Scratch directory for sequential output
+ * @param {number} options.duration - Video duration (seconds)
+ * @param {number} options.width
+ * @param {number} options.quality
+ * @param {Function} progressCallback - (percent, message) => void
+ * @returns {Promise<{timestamps: number[], total: number}>}
+ */
+async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, progressCallback = null) {
+  const {
+    tempDir,
+    duration: knownDuration = null,
+    width = config.frame.defaultWidth,
+    quality = config.frame.defaultQuality,
+  } = options;
+
+  const videoDuration = knownDuration ?? (await getVideoInfo(videoPath)).duration;
+
+  if (progressCallback) {
+    progressCallback(5, '正在探测关键帧...');
+  }
+
+  const timestamps = await probeAllKeyframeTimes(videoPath, videoDuration);
+  if (timestamps.length === 0) {
+    throw new Error('未找到关键帧');
+  }
+
+  const scratchDir = tempDir || path.join(config.paths.temp, `keyframe-${Date.now()}`);
+  await fs.rm(scratchDir, { recursive: true, force: true });
+  await fs.mkdir(scratchDir, { recursive: true });
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const qv = String(Math.max(1, Math.min(31, Math.round(31 * (100 - quality) / 100))));
+  const batchTimeoutSec = getBatchKeyframeTimeoutSec(videoDuration);
+
+  try {
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoPath, { timeout: batchTimeoutSec })
+        .inputOptions(['-skip_frame', 'nokey'])
+        .outputOptions([
+          '-vsync', '0',
+          '-vf', `scale=${width}:-1:flags=lanczos`,
+          '-q:v', qv,
+          '-threads', String(config.ffmpeg.threads),
+        ])
+        .output(path.join(scratchDir, '%06d.jpg'))
+        .on('start', (commandLine) => {
+          logger.info('Keyframe batch extraction started', {
+            command: commandLine.substring(0, 300),
+            keyframeCount: timestamps.length,
+            timeoutSec: batchTimeoutSec,
+          });
+        })
+        .on('progress', (progress) => {
+          if (!progressCallback) return;
+
+          let pct = progress.percent;
+          if (pct == null && progress.timemark && videoDuration > 0) {
+            pct = (parseTimemark(progress.timemark) / videoDuration) * 100;
+          }
+          if (pct != null) {
+            const mapped = Math.round(5 + Math.min(100, Math.max(0, pct)) * 0.85);
+            progressCallback(mapped, '正在采集关键帧...');
+          }
+        })
+        .on('error', (err, _stdout, stderr) => {
+          logger.error('Keyframe batch extraction failed', {
+            error: err.message,
+            stderr: (stderr || '').substring(0, 500),
+          });
+          reject(err);
+        })
+        .on('end', resolve)
+        .run();
+    });
+
+    const entries = await fs.readdir(scratchDir);
+    const batchFiles = entries
+      .filter((f) => /^\d+\.jpg$/i.test(f))
+      .map((f) => ({
+        name: f,
+        index: parseInt(f.replace(/\.jpg$/i, ''), 10),
+      }))
+      .sort((a, b) => a.index - b.index);
+
+    if (batchFiles.length !== timestamps.length) {
+      logger.warn('Keyframe count mismatch between ffprobe and ffmpeg output', {
+        probed: timestamps.length,
+        extracted: batchFiles.length,
+      });
+    }
+
+    const count = Math.min(batchFiles.length, timestamps.length);
+    if (count === 0) {
+      throw new Error('关键帧提取未产出任何文件');
+    }
+
+    for (let i = 0; i < count; i++) {
+      const ts = timestamps[i];
+      const destPath = path.join(outputDir, `${ts}.jpg`);
+      const srcPath = path.join(scratchDir, batchFiles[i].name);
+
+      try {
+        await fs.access(destPath);
+        await fs.unlink(srcPath);
+      } catch {
+        await fs.rename(srcPath, destPath);
+      }
+
+      if (progressCallback) {
+        const pct = Math.round(90 + ((i + 1) / count) * 10);
+        progressCallback(pct, `正在整理关键帧 (${i + 1}/${count})...`);
+      }
+    }
+
+    logger.info('Keyframe batch extraction completed', {
+      probed: timestamps.length,
+      saved: count,
+    });
+
+    return { timestamps: timestamps.slice(0, count), total: count };
+  } finally {
+    await fs.rm(scratchDir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Extract frames at multiple timestamps
  * @param {string} videoPath - Path to video file
@@ -501,9 +673,11 @@ module.exports = {
   extractCover,
   extractFrame,
   computePreviewSegment,
+  probeAllKeyframeTimes,
   findAdjacentKeyframe,
   resolveClipSegment,
   generatePreviewClip,
+  extractAllKeyframesBatch,
   extractFrameBatch,
   extractFramesSmart,
   generateSpriteSheet,

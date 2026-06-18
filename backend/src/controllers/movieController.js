@@ -82,6 +82,10 @@ async function getMovie(req, res, next) {
       coverUrl,
       frames: `/api/movies/${id}/frames`,
       status: movie.status,
+      frameInterval: movie.frameInterval,
+      keyframesExtracted: movie.keyframesExtracted === true,
+      keyframesCount: movie.keyframesCount || 0,
+      keyframesExtractedAt: movie.keyframesExtractedAt || null,
     });
   } catch (error) {
     next(error);
@@ -441,12 +445,104 @@ async function listCachedFrames(req, res, next) {
       apiUrl: `/api/movies/${id}/frames/${frame.timestamp}`,
       size: frame.size,
       createdAt: frame.createdAt,
+      isKeyframe: frame.isKeyframe === true,
     }));
 
     res.json({
       movieId: id,
       total: frames.length,
       frames,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Extract all keyframes for a movie (background task)
+ */
+async function extractAllKeyframes(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    if (movie.keyframesExtracted) {
+      return res.status(409).json({
+        error: 'ALREADY_EXTRACTED',
+        message: '该视频的关键帧已全部采集完成',
+        keyframesCount: movie.keyframesCount || 0,
+        keyframesExtractedAt: movie.keyframesExtractedAt,
+        code: 409,
+      });
+    }
+
+    const existingTasks = await cacheService.getTasksByMovie(id);
+    const runningTask = existingTasks.find(
+      (task) => task.type === 'keyframe_extract' &&
+        (task.status === 'pending' || task.status === 'processing')
+    );
+
+    if (runningTask) {
+      return res.status(202).json({
+        taskId: runningTask.taskId,
+        status: runningTask.status,
+        message: '关键帧采集中，请稍候',
+      });
+    }
+
+    const taskId = taskQueue.enqueue({
+      type: 'keyframe_extract',
+      movieId: id,
+      priority: PRIORITY.NORMAL,
+      params: {
+        moviePath: movie.originalPath,
+        duration: movie.duration,
+      },
+      execute: async ({ onProgress, params, movieId: taskMovieId }) => {
+        const frameDir = path.join(config.paths.frames, taskMovieId);
+        const tempDir = path.join(config.paths.temp, `keyframe-${taskMovieId}`);
+
+        const { timestamps, total } = await ffmpegService.extractAllKeyframesBatch(
+          params.moviePath,
+          frameDir,
+          {
+            duration: params.duration,
+            tempDir,
+          },
+          async (pct, msg) => onProgress(pct, msg)
+        );
+
+        for (const ts of timestamps) {
+          await storageService.saveFrameMeta(taskMovieId, ts, { isKeyframe: true });
+        }
+
+        await storageService.saveKeyframesManifest(taskMovieId, {
+          timestamps,
+          extractedAt: new Date().toISOString(),
+        });
+
+        await cacheService.updateMovie(taskMovieId, {
+          keyframesExtracted: true,
+          keyframesCount: total,
+          keyframesExtractedAt: new Date().toISOString(),
+        });
+
+        await onProgress(100, `关键帧采集完成 (${total} 帧)`);
+      },
+    });
+
+    res.status(202).json({
+      taskId,
+      status: 'queued',
+      message: '关键帧采集任务已加入队列',
     });
   } catch (error) {
     next(error);
@@ -862,6 +958,7 @@ module.exports = {
   getFrameIndex,
   getFrame,
   getKeyframe,
+  extractAllKeyframes,
   getClip,
   listCachedFrames,
   listCachedClips,

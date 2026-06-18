@@ -235,18 +235,16 @@ onUnmounted(() => {
 .kf-browser-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
+  height: 100vh;
+  height: 100dvh;
+  background-color: var(--bg-secondary);
   z-index: 9999;
 }
 
 .kf-browser {
   width: 100%;
-  height: 85vh;
+  height: 100%;
   background-color: var(--bg-secondary);
-  border-radius: 20px 20px 0 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -257,6 +255,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   padding: 16px 20px;
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   flex-shrink: 0;
 }
@@ -290,6 +289,7 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .kf-loading,

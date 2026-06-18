@@ -21,39 +21,67 @@
             <!-- Loading state -->
             <div v-if="loading" class="loading-state">
               <div class="spinner"></div>
-              <span>正在扫描目录...</span>
+              <span>正在加载目录...</span>
             </div>
 
             <!-- Error state -->
             <div v-else-if="error" class="error-state">
               <p class="error-message">{{ error }}</p>
-              <button class="retry-btn" @click="loadLocalMovies">重试</button>
+              <button class="retry-btn" @click="loadDirectory(currentPath)">重试</button>
             </div>
 
-            <!-- Empty state -->
-            <div v-else-if="localMovies.length === 0" class="empty-state">
-              <p>目录为空或未配置</p>
-              <p class="hint">请在服务器上配置 LOCAL_MOVIES_DIR 环境变量</p>
-            </div>
-
-            <!-- Movie list -->
-            <div v-else class="movie-list">
-              <div 
-                v-for="movie in localMovies" 
-                :key="movie.path"
-                class="movie-item"
-                :class="{ selected: selectedMovie?.path === movie.path }"
-                @click="selectMovie(movie)"
-              >
-                <div class="movie-icon">🎬</div>
-                <div class="movie-info">
-                  <div class="movie-name">{{ movie.name }}</div>
-                  <div class="movie-meta">
-                    <span class="movie-ext">{{ movie.extension.toUpperCase() }}</span>
-                    <span class="movie-size">{{ movie.sizeFormatted }}</span>
-                  </div>
+            <!-- Directory browser -->
+            <div v-else-if="directoryInfo" class="file-browser">
+              <div class="path-bar">
+                <button
+                  class="up-btn"
+                  :disabled="!directoryInfo.parent"
+                  @click="goUp"
+                  title="上级目录"
+                >
+                  ←
+                </button>
+                <div class="breadcrumb">
+                  <button
+                    v-for="(crumb, index) in breadcrumbs"
+                    :key="crumb.path"
+                    class="breadcrumb-item"
+                    :class="{ active: index === breadcrumbs.length - 1 }"
+                    @click="navigateTo(crumb.path)"
+                  >
+                    {{ crumb.name }}
+                  </button>
                 </div>
-                <div v-if="selectedMovie?.path === movie.path" class="check-icon">✓</div>
+              </div>
+
+              <div v-if="entries.length === 0" class="empty-state inline-empty">
+                <p>当前目录下没有子文件夹或可导入的视频</p>
+              </div>
+
+              <div v-else class="entry-list">
+                <div
+                  v-for="entry in entries"
+                  :key="entry.path"
+                  class="entry-item"
+                  :class="{
+                    directory: entry.type === 'directory',
+                    selected: selectedMovie?.path === entry.path,
+                  }"
+                  @click="handleEntryClick(entry)"
+                >
+                  <div class="entry-icon">
+                    {{ entry.type === 'directory' ? '📁' : '🎬' }}
+                  </div>
+                  <div class="entry-info">
+                    <div class="entry-name">{{ entry.name }}</div>
+                    <div v-if="entry.type === 'file'" class="entry-meta">
+                      <span class="entry-ext">{{ entry.extension.toUpperCase() }}</span>
+                      <span class="entry-size">{{ entry.sizeFormatted }}</span>
+                    </div>
+                  </div>
+                  <div v-if="entry.type === 'directory'" class="entry-action">›</div>
+                  <div v-else-if="selectedMovie?.path === entry.path" class="check-icon">✓</div>
+                </div>
               </div>
             </div>
           </div>
@@ -93,32 +121,58 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useMovieApi } from '../composables/useMovieApi'
-import { useMovieStore } from '../stores/movieStore'
 
 const emit = defineEmits(['select-success', 'select-error'])
 
-const { clearCache, getLocalMovies, selectLocalMovie, getTaskStatus } = useMovieApi()
+const { browseLocalDirectory, selectLocalMovie, getTaskStatus } = useMovieApi()
 
 const showDialog = ref(false)
 const showProgress = ref(false)
 const loading = ref(false)
 const confirming = ref(false)
 const error = ref(null)
-const localMovies = ref([])
+const directoryInfo = ref(null)
+const currentPath = ref(null)
 const selectedMovie = ref(null)
 const progress = ref(0)
 const progressMessage = ref('')
 const processingMovie = ref(null)
 
-// 用于轮询任务状态的定时器
 let pollInterval = null
+
+const entries = computed(() => directoryInfo.value?.entries || [])
+
+const breadcrumbs = computed(() => {
+  const info = directoryInfo.value
+  if (!info) return []
+
+  const separator = info.root.includes('\\') ? '\\' : '/'
+  const rootName = info.root.split(/[/\\]/).filter(Boolean).pop() || info.root
+  const crumbs = [{ name: rootName, path: info.root }]
+
+  if (info.path === info.root) {
+    return crumbs
+  }
+
+  const relative = info.path.slice(info.root.length).replace(/^[/\\]/, '')
+  const parts = relative.split(/[/\\]/).filter(Boolean)
+  let accumulated = info.root.replace(/[/\\]+$/, '')
+
+  for (const part of parts) {
+    accumulated = `${accumulated}${separator}${part}`
+    crumbs.push({ name: part, path: accumulated })
+  }
+
+  return crumbs
+})
 
 const openDialog = async () => {
   showDialog.value = true
   selectedMovie.value = null
-  await loadLocalMovies()
+  currentPath.value = null
+  await loadDirectory(null)
 }
 
 const closeDialog = () => {
@@ -126,55 +180,77 @@ const closeDialog = () => {
   showDialog.value = false
   selectedMovie.value = null
   error.value = null
+  directoryInfo.value = null
+  currentPath.value = null
 }
 
-const loadLocalMovies = async () => {
+const loadDirectory = async (path) => {
   loading.value = true
   error.value = null
-  
+
   try {
-    const data = await getLocalMovies()
-    localMovies.value = data.movies || []
+    const data = await browseLocalDirectory(path)
+    directoryInfo.value = data
+    currentPath.value = data.path
   } catch (err) {
-    error.value = err.message || '无法加载电影列表'
-    localMovies.value = []
+    error.value = err.response?.data?.message || err.message || '无法加载目录'
+    directoryInfo.value = null
   } finally {
     loading.value = false
   }
 }
 
-const selectMovie = (movie) => {
-  selectedMovie.value = movie
+const navigateTo = (path) => {
+  if (path === currentPath.value) return
+  selectedMovie.value = null
+  loadDirectory(path)
+}
+
+const goUp = () => {
+  if (!directoryInfo.value?.parent) return
+  navigateTo(directoryInfo.value.parent)
+}
+
+const handleEntryClick = (entry) => {
+  if (entry.type === 'directory') {
+    navigateTo(entry.path)
+    return
+  }
+
+  selectedMovie.value = {
+    name: entry.name.replace(/\.[^.]+$/, ''),
+    path: entry.path,
+    extension: entry.extension,
+    sizeFormatted: entry.sizeFormatted,
+  }
 }
 
 const confirmSelection = async () => {
   if (!selectedMovie.value || confirming.value) return
-  
+
   confirming.value = true
-  
+
   try {
     const data = await selectLocalMovie(
       selectedMovie.value.path,
       selectedMovie.value.name
     )
-    
-    // 关闭选择对话框，打开进度对话框
+
     showDialog.value = false
     showProgress.value = true
     processingMovie.value = selectedMovie.value
     progress.value = 0
     progressMessage.value = '准备中...'
-    
-    // 开始轮询任务状态
+
     pollTaskStatus(data.taskId, data.movieId)
-    
+
     emit('select-success', {
       movieId: data.movieId,
       taskId: data.taskId,
       movie: selectedMovie.value,
     })
   } catch (err) {
-    error.value = err.message || '添加失败'
+    error.value = err.response?.data?.message || err.message || '添加失败'
     confirming.value = false
     emit('select-error', err)
   }
@@ -192,9 +268,7 @@ const pollTaskStatus = async (taskId, movieId) => {
 
         if (task.status === 'completed') {
           stopPolling()
-          // 关闭进度对话框，刷新列表
           showProgress.value = false
-          // 通知父组件刷新
           emit('select-success', { movieId, completed: true })
         } else if (task.status === 'failed') {
           stopPolling()
@@ -202,13 +276,12 @@ const pollTaskStatus = async (taskId, movieId) => {
           emit('select-error', new Error(task.error || '处理失败'))
         }
       }
-    } catch (err) {
+    } catch {
       // 忽略轮询错误，继续尝试
     }
   }
-  
+
   pollInterval = setInterval(poll, 1000)
-  // 立即执行一次
   await poll()
 }
 
@@ -252,7 +325,6 @@ onUnmounted(() => {
   transform: scale(0.98);
 }
 
-/* Dialog Overlay */
 .dialog-overlay {
   position: fixed;
   top: 0;
@@ -267,7 +339,6 @@ onUnmounted(() => {
   backdrop-filter: blur(4px);
 }
 
-/* Dialog */
 .dialog {
   background-color: var(--bg-secondary);
   border-radius: 16px;
@@ -322,7 +393,6 @@ onUnmounted(() => {
   padding: 16px 20px;
 }
 
-/* Loading State */
 .loading-state {
   display: flex;
   flex-direction: column;
@@ -346,7 +416,6 @@ onUnmounted(() => {
   to { transform: rotate(360deg); }
 }
 
-/* Error State */
 .error-state {
   display: flex;
   flex-direction: column;
@@ -375,7 +444,6 @@ onUnmounted(() => {
   background-color: rgba(255, 255, 255, 0.15);
 }
 
-/* Empty State */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -386,20 +454,87 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.empty-state .hint {
-  font-size: 0.875rem;
-  opacity: 0.7;
-  margin-top: 8px;
+.inline-empty {
+  padding: 24px 12px;
 }
 
-/* Movie List */
-.movie-list {
+.file-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.path-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+
+.up-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.up-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.breadcrumb-item {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breadcrumb-item:not(.active):hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.breadcrumb-item.active {
+  color: var(--text-primary);
+  cursor: default;
+}
+
+.breadcrumb-item:not(:last-child)::after {
+  content: '/';
+  margin-left: 4px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.entry-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.movie-item {
+.entry-item {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -411,32 +546,32 @@ onUnmounted(() => {
   border: 2px solid transparent;
 }
 
-.movie-item:hover {
+.entry-item:hover {
   background-color: rgba(255, 255, 255, 0.1);
 }
 
-.movie-item.selected {
+.entry-item.selected {
   border-color: var(--accent);
   background-color: rgba(255, 107, 139, 0.15);
 }
 
-.movie-icon {
+.entry-icon {
   font-size: 1.5rem;
 }
 
-.movie-info {
+.entry-info {
   flex: 1;
   min-width: 0;
 }
 
-.movie-name {
+.entry-name {
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.movie-meta {
+.entry-meta {
   display: flex;
   gap: 8px;
   font-size: 0.8rem;
@@ -444,11 +579,17 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 
-.movie-ext {
+.entry-ext {
   background-color: rgba(255, 255, 255, 0.1);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.75rem;
+}
+
+.entry-action {
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  line-height: 1;
 }
 
 .check-icon {
@@ -463,7 +604,6 @@ onUnmounted(() => {
   color: white;
 }
 
-/* Dialog Footer */
 .dialog-footer {
   display: flex;
   gap: 12px;
@@ -505,7 +645,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-/* Progress Dialog */
 .processing-name {
   text-align: center;
   font-weight: 500;

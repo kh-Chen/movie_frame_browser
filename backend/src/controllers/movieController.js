@@ -527,6 +527,115 @@ async function clearCache(req, res, next) {
 }
 
 /**
+ * Browse local movies directory (one level at a time)
+ */
+async function browseLocalDirectory(req, res, next) {
+  try {
+    const rootDir = path.resolve(config.localMovies.directory);
+    const requestedPath = req.query.path;
+
+    try {
+      await fs.access(rootDir);
+    } catch {
+      return res.status(404).json({
+        error: 'DIRECTORY_NOT_FOUND',
+        message: `配置的目录不存在: ${rootDir}`,
+        code: 404,
+      });
+    }
+
+    let currentDir = rootDir;
+    if (requestedPath) {
+      const resolved = resolvePathWithinRoot(requestedPath, rootDir);
+      if (!resolved) {
+        return res.status(400).json({
+          error: 'INVALID_PATH',
+          message: '路径必须在配置的本地电影目录内',
+          code: 400,
+        });
+      }
+
+      let stat;
+      try {
+        stat = await fs.stat(resolved);
+      } catch {
+        return res.status(404).json({
+          error: 'DIRECTORY_NOT_FOUND',
+          message: '目录不存在',
+          code: 404,
+        });
+      }
+
+      if (!stat.isDirectory()) {
+        return res.status(400).json({
+          error: 'NOT_A_DIRECTORY',
+          message: '目标路径不是目录',
+          code: 400,
+        });
+      }
+
+      currentDir = resolved;
+    }
+
+    const dirents = await fs.readdir(currentDir, { withFileTypes: true });
+    const supportedExtensions = config.api.supportedVideoFormats;
+    const entries = [];
+
+    for (const dirent of dirents) {
+      const fullPath = path.join(currentDir, dirent.name);
+
+      if (dirent.isDirectory()) {
+        entries.push({
+          name: dirent.name,
+          path: fullPath,
+          type: 'directory',
+        });
+        continue;
+      }
+
+      if (!dirent.isFile()) {
+        continue;
+      }
+
+      const ext = path.extname(dirent.name).toLowerCase().slice(1);
+      if (!supportedExtensions.includes(ext)) {
+        continue;
+      }
+
+      const stats = await fs.stat(fullPath);
+      entries.push({
+        name: dirent.name,
+        path: fullPath,
+        type: 'file',
+        extension: ext,
+        size: stats.size,
+        sizeFormatted: formatFileSize(stats.size),
+        modifiedAt: stats.mtime.toISOString(),
+      });
+    }
+
+    entries.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    const parent = currentDir === rootDir ? null : path.dirname(currentDir);
+
+    res.json({
+      root: rootDir,
+      path: currentDir,
+      name: path.basename(currentDir),
+      parent,
+      entries,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * List local movie files
  * Scans configured directory for video files
  */
@@ -713,6 +822,7 @@ module.exports = {
   listCachedClips,
   getCacheStatus,
   clearCache,
+  browseLocalDirectory,
   listLocalMovies,
   selectLocalMovie,
 };

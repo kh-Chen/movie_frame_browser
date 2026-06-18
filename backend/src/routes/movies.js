@@ -10,6 +10,7 @@ const movieController = require('../controllers/movieController');
 // Static paths must be registered before /:id
 router.get('/cache/status', movieController.getCacheStatus);
 router.delete('/cache', movieController.clearCache);
+router.get('/local/browse', movieController.browseLocalDirectory);
 router.get('/local/list', movieController.listLocalMovies);
 router.post('/local/select', movieController.selectLocalMovie);
 

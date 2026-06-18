@@ -49,6 +49,14 @@ export const useMovieApi = () => {
   }
 
   /**
+   * 浏览本地电影目录（文件树，单层）
+   */
+  const browseLocalDirectory = async (dirPath) => {
+    const params = dirPath ? { path: dirPath } : undefined
+    return api.get('/movies/local/browse', { params })
+  }
+
+  /**
    * 获取本地电影列表
    */
   const getLocalMovies = async () => {
@@ -105,6 +113,7 @@ export const useMovieApi = () => {
     getFrameUrl,
     getClipUrl,
     getTaskStatus,
+    browseLocalDirectory,
     getLocalMovies,
     selectLocalMovie,
     getFrameIndex,

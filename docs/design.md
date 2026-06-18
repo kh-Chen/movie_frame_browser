@@ -1,7 +1,7 @@
 # 电影帧浏览 Web 应用 - 产品设计文档
 
-> 版本：v1.1  
-> 日期：2026-06-02  
+> 版本：v1.2  
+> 日期：2026-06-18  
 > 状态：已与实现对齐（backend/ + frontend/ 分目录）
 
 ---
@@ -13,35 +13,49 @@
 #### 用户路径
 
 ```
-[上传/选择电影] → [等待处理] → [封面展示] → [时间轴浏览] → [帧预览/动图预览] → [返回浏览]
+[选择本地电影] → [入库处理] → [封面展示] → [时间轴浏览] → [片段预览/续播] → [媒体库查看缓存]
 ```
 
 具体步骤：
 
-1. **选择电影**：用户点击「选择电影」按钮，弹出文件选择器，展示服务器端文件列表（支持 MP4、MKV），
-2. **后台处理**：用户选择文件后，后端启动 ffmpeg 提取封面图 + 预抽帧队列
-3. **封面展示**：处理完成后，前端自动展示电影封面图作为起点
-4. **时间轴浏览**：用户拖动/滑动底部时间轴，后端按需返回对应时间戳的帧图
-5. **帧预览**：点击当前帧，弹出模态框，播放约 3 秒 MP4 片段（`/clip`）
-6. **继续浏览**：关闭预览后，用户可继续滑动时间轴浏览
+1. **选择电影**：首页点击「选择电影」，弹出服务器 `LOCAL_MOVIES_DIR` 目录下的视频列表
+2. **入库处理**：选择后后端提取封面、写入帧索引元数据（帧图不预抽，按需生成）
+3. **浏览**：进入 `Browse` 页，拖动时间轴，后端按需返回对应时间戳的帧图
+4. **片段预览**：点击「预览」或帧图，内联播放 MP4 片段（关键帧对齐，默认前 1 秒、后 5 秒）
+5. **续播**：片段播放结束后可继续下一段（`CLIP_CONTINUE_OFFSET` 控制偏移）
+6. **媒体库**：`Gallery` 页查看已缓存的帧图与片段网格
 
 #### 页面结构
 
+**首页（Home）**
+
 ```
 ┌─────────────────────────────────────────────┐
-│  Header: 电影名称 + 进度状态                 │
+│  Header: 电影帧浏览  [任务队列] [缓存管理]   │
 ├─────────────────────────────────────────────┤
-│                                             │
-│         主展示区 (Frame Display)             │
-│    显示当前时间戳对应的帧图片                │
-│    点击放大 / 弹出 GIF 预览                  │
-│                                             │
+│  [选择电影]                                  │
+│  我的电影 (N)                                │
+│  ┌──────┐ ┌──────┐ ┌──────┐                │
+│  │ 封面 │ │ 封面 │ │ 封面 │  ...            │
+│  └──────┘ └──────┘ └──────┘                │
+└─────────────────────────────────────────────┘
+```
+
+**浏览页（Browse）**
+
+```
+┌─────────────────────────────────────────────┐
+│  ← 电影名称  01:23:45        [信息] [删除]   │
+├─────────────────────────────────────────────┤
+│         主展示区 (FrameDisplay)              │
+│    帧图 / 内联 MP4 片段预览                  │
+├─────────────────────────────────────────────┤
+│  [-10s][-5s][-3s][预览][+3s][+5s][+10s]      │
 ├─────────────────────────────────────────────┤
 │  时间轴 (Timeline)                           │
-│  [======●========================] 01:23:45  │
-│  拖动滑块 → 动态显示对应帧                   │
+│  [======●========================]           │
 ├─────────────────────────────────────────────┤
-│  操作栏: [封面] [信息] [删除]               │
+│  操作栏: [封面] [媒体库] [信息]             │
 └─────────────────────────────────────────────┘
 ```
 
@@ -54,49 +68,30 @@
 | 操作 | 行为 |
 |------|------|
 | 单指水平滑动 | 移动时间轴滑块，显示对应时间戳帧图 |
-| 快速滑动（惯性滚动） | 持续更新帧图，松开后根据惯性递减采样频率 |
 | 点击时间轴任意位置 | 立即跳转到对应位置并显示帧图 |
 
-- 滑块默认宽度：4px，触控热区扩大到 44px × 高度
-- 时间轴两端预留 8% 边距，防止边界操作困难
-- 滑动过程中，实时显示当前时间戳（格式：`HH:MM:SS.ms`）
-
-#### 手势操作
-
-| 手势 | 行为 |
-|------|------|
-| 单指点击帧图片 | 触发 GIF 动图预览 |
-| 双指捏合 | 缩放当前帧图片（可选功能） |
-| 下拉刷新 | 重新加载电影帧索引（已有缓存时跳过） |
-| 长按帧图片 | 保存当前帧到本地 |
+- 滑块触控热区扩大到 44px
+- 滑动过程中实时显示当前时间戳（格式：`HH:MM:SS`）
 
 #### 帧显示策略
 
-由于帧提取依赖 ffmpeg 处理（I/O 密集型），采用以下策略保证流畅度：
+帧提取为 I/O 密集型操作，采用以下策略：
 
-1. **按需提取**：用户滑动时，先返回上次缓存的最近帧，同时异步请求新帧
-2. **帧预加载**：在滑动停止超过 300ms 后，自动预加载相邻 ±5 秒的关键帧
-3. **占位图**：新帧加载期间显示灰色占位块 + 加载动画
-4. **质量自适应**：移动端帧图最大宽度 1280px，JPEG 质量 75%
+1. **按需提取**：滑动到新时间点时异步请求帧图
+2. **帧预加载**：滑动停止后预加载相邻帧
+3. **占位图**：加载期间显示灰色占位 + 动画
+4. **质量自适应**：默认 JPEG 宽度 1280px，质量 75%
 
 ---
 
-### 1.3 帧预览与 GIF 动图预览交互细节
+### 1.3 片段预览交互
 
-#### 帧预览（当前帧大图）
-
-- 点击主展示区的帧图片 → 全屏展示该帧
-- 支持左右滑动切换相邻帧（每次跳 1 秒）
-- 显示时间戳和帧号信息
-
-#### 片段预览（实现默认：MP4 clip）
-
-- **触发方式**：点击帧图 → `GifPreview` 模态框（组件名保留）
-- **动画范围**：由 `CLIP_WINDOW` 配置，默认中心 ±1.5 秒（约 3 秒）
-- **格式**：H.264 MP4（`GET /api/movies/:id/clip?t=`），生成与缓存快于 GIF
+- **触发方式**：浏览页工具栏「预览」按钮，或点击帧图进入片段模式
+- **动画范围**：`CLIP_SEEK_BACK`（默认 1s）+ `CLIP_SEEK_FORWARD`（默认 5s），对齐关键帧
+- **格式**：H.264 MP4（`GET /api/movies/:id/clip?t=`）
 - **加载状态**：轮询 `GET /api/tasks/:taskId`，生成中显示进度
-- **缓存策略**：同时间戳 clip 已存在则直接 302 静态文件
-- **GIF**：`GET /api/movies/:id/gif` 仍可用，前端默认不走此路径
+- **缓存策略**：同时间戳 clip 已存在则直接返回 MP4 文件
+- **续播**：播放结束后点击续播，以下一段关键帧为起点生成新片段
 
 ---
 
@@ -106,59 +101,29 @@
 
 | 方法 | 路径 | 描述 | 同步方式 |
 |------|------|------|----------|
+| GET | `/api/health` | 健康检查 | 同步 |
 | GET | `/api/movies` | 列出所有电影 | 同步 |
 | GET | `/api/movies/:id` | 获取电影元数据 | 同步 |
 | DELETE | `/api/movies/:id` | 删除电影及缓存 | 同步 |
-| GET | `/api/movies/:id/cover` | 获取封面图 | 同步（302 重定向到文件） |
+| GET | `/api/movies/:id/cover` | 获取封面图 | 同步（302） |
 | GET | `/api/movies/:id/frames` | 获取帧索引（时间点列表） | 同步 |
-| GET | `/api/movies/:id/frames/:timestamp` | 获取指定时间戳的帧图 | 同步（302 重定向） |
-| GET | `/api/movies/:id/clip` | 生成/获取 MP4 预览片段（推荐） | 异步（轮询任务状态） |
+| GET | `/api/movies/:id/frames/cached` | 列出已缓存帧图 | 同步 |
+| GET | `/api/movies/:id/frames/:timestamp` | 获取指定时间戳帧图 | 同步（按需生成，302） |
+| GET | `/api/movies/:id/clip` | 生成/获取 MP4 预览片段 | 同步或异步 |
+| GET | `/api/movies/:id/clips` | 列出已缓存片段 | 同步 |
 | GET | `/api/movies/local/list` | 列出本地目录可导入视频 | 同步 |
 | POST | `/api/movies/local/select` | 登记本地路径为电影 | 异步 |
 | GET | `/api/movies/cache/status` | 缓存占用统计 | 同步 |
 | DELETE | `/api/movies/cache` | 清理缓存（可选 `movieId`） | 同步 |
 | GET | `/api/tasks/:taskId` | 查询任务状态 | 同步 |
-| GET | `/api/health` | 健康检查 | 同步 |
+| GET | `/api/tasks/queue/status` | 任务队列状态 | 同步 |
+| DELETE | `/api/tasks/:taskId` | 取消任务 | 同步 |
+
+> **说明**：不支持文件上传 API（`POST /api/movies`）与 GIF 端点；电影通过本地目录选择入库。
 
 ---
 
 ### 2.2 详细 API 定义
-
-#### POST `/api/movies`
-
-上传电影文件。文件通过 `multipart/form-data` 上传。
-
-**请求**
-
-```
-Content-Type: multipart/form-data
-Body:
-  file: [二进制文件流]
-  name: "电影名称（可选，自动从文件名提取）"
-```
-
-**响应 - 202 Accepted**
-
-```json
-{
-  "taskId": "task_abc123",
-  "status": "processing",
-  "message": "电影已接收，正在提取封面和帧索引",
-  "movieId": null
-}
-```
-
-**响应 - 400 Bad Request**
-
-```json
-{
-  "error": "UNSUPPORTED_FORMAT",
-  "message": "不支持的格式，支持：MP4、MKV",
-  "code": 400
-}
-```
-
----
 
 #### GET `/api/movies`
 
@@ -177,6 +142,7 @@ Body:
       "duration": 10180.5,
       "resolution": "1920x1080",
       "uploadedAt": "2026-06-01T08:30:00Z",
+      "status": "ready",
       "coverStatus": "ready",
       "frameIndexStatus": "ready"
     }
@@ -186,72 +152,27 @@ Body:
 
 ---
 
-#### GET `/api/movies/:id`
+#### POST `/api/movies/local/select`
 
-获取电影详情。
+登记本地目录中的视频文件（不复制文件，仅记录 `originalPath`）。
 
-**响应 - 200 OK**
+**请求**
 
 ```json
 {
-  "id": "mv_001",
-  "name": "星际穿越",
-  "originalName": "Interstellar.2014.1080p.BluRay.x264.mkv",
-  "size": 8589934592,
-  "duration": 10180.5,
-  "resolution": "1920x1080",
-  "codec": "h264",
-  "uploadedAt": "2026-06-01T08:30:00Z",
-  "coverUrl": "/api/movies/mv_001/cover",
-  "frames": "/api/movies/mv_001/frames",
-  "status": "ready"
+  "path": "/mnt/movies/Interstellar.mkv",
+  "name": "星际穿越（可选）"
 }
 ```
 
-**响应 - 404 Not Found**
+**响应 - 202 Accepted**
 
 ```json
 {
-  "error": "MOVIE_NOT_FOUND",
-  "message": "电影不存在或已被删除",
-  "code": 404
-}
-```
-
----
-
-#### DELETE `/api/movies/:id`
-
-删除电影及其所有缓存文件。
-
-**响应 - 200 OK**
-
-```json
-{
-  "message": "电影已删除",
-  "id": "mv_001"
-}
-```
-
----
-
-#### GET `/api/movies/:id/cover`
-
-获取电影封面图。返回 302 重定向到静态文件 URL。
-
-**响应 - 302 Found**
-
-```
-Location: /movie/static/covers/mv_001.jpg
-```
-
-**响应 - 404 Not Found**
-
-```json
-{
-  "error": "COVER_NOT_READY",
-  "message": "封面尚未生成",
-  "code": 404
+  "taskId": "task_abc123",
+  "status": "processing",
+  "message": "电影已登记，正在提取封面",
+  "movieId": "mv_001"
 }
 ```
 
@@ -259,25 +180,23 @@ Location: /movie/static/covers/mv_001.jpg
 
 #### GET `/api/movies/:id/frames`
 
-获取帧索引列表（即所有预抽帧的时间点）。
+获取帧索引列表（时间点，非预抽帧文件列表）。
 
 **响应 - 200 OK**
 
 ```json
 {
   "movieId": "mv_001",
-  "interval": 60,
-  "totalFrames": 170,
+  "interval": 5,
+  "totalFrames": 2036,
   "frames": [
     { "timestamp": 0, "url": "/api/movies/mv_001/frames/0" },
-    { "timestamp": 60, "url": "/api/movies/mv_001/frames/60" },
-    { "timestamp": 120, "url": "/api/movies/mv_001/frames/120" }
+    { "timestamp": 5, "url": "/api/movies/mv_001/frames/5" }
   ]
 }
 ```
 
-- `interval`：帧间隔（秒），默认 60 秒
-- 可通过查询参数 `?interval=30` 调整
+- `interval`：自适应间隔（秒），可通过 `?interval=30` 覆盖
 
 ---
 
@@ -292,64 +211,96 @@ Location: /movie/static/covers/mv_001.jpg
 | width | number | 图片最大宽度 | 1280 |
 | quality | number | JPEG 质量 1-100 | 75 |
 
+**响应 - 302 Found**（缓存命中或按需生成后）
+
+```
+Location: /movie/static/frames/mv_001/120.jpg
+```
+
+---
+
+#### GET `/api/movies/:id/frames/cached`
+
+列出磁盘上已缓存的帧图文件。
+
 **响应 - 200 OK**
-
-```
-Content-Type: image/jpeg
-[二进制图片数据]
-```
-
-**响应 - 302 Found**
-
-```
-Location: /movie/static/frames/mv_001/60.jpg
-```
-
-**响应 - 404 Not Found**
 
 ```json
 {
-  "error": "FRAME_NOT_FOUND",
-  "message": "时间戳超出范围或帧未生成",
-  "code": 404
+  "movieId": "mv_001",
+  "total": 42,
+  "frames": [
+    {
+      "timestamp": 120,
+      "url": "/movie/static/frames/mv_001/120.jpg",
+      "apiUrl": "/api/movies/mv_001/frames/120",
+      "size": 51200,
+      "createdAt": "2026-06-18T10:00:00Z"
+    }
+  ]
 }
 ```
 
 ---
 
-#### GET `/api/movies/:id/gif`
+#### GET `/api/movies/:id/clip`
 
-生成或获取 GIF 动图。
+生成或获取 MP4 预览片段。
 
 **查询参数**
 
 | 参数 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
 | t | number | 中心时间戳（秒） | 必需 |
-| width | number | GIF 宽度 | 320 |
-| fps | number | 帧率 | 10 |
-| window | number | 前后各几秒 | 3 |
 
-**响应 - 200 OK**（GIF 已存在，直接返回）
+**响应 - 200 OK**（片段已存在）
 
 ```
-Content-Type: image/gif
-Content-Length: 204800
-[二进制 GIF 数据]
+Content-Type: video/mp4
+X-Clip-Start: 118.5
+X-Clip-End: 125.0
+[二进制 MP4 数据]
 ```
 
-**响应 - 202 Accepted**（GIF 正在生成）
+**响应 - 202 Accepted**（片段正在生成）
 
 ```json
 {
-  "taskId": "gif_mv001_120",
+  "taskId": "clip_mv001_120",
   "status": "generating",
-  "progress": 45,
-  "message": "GIF 生成中，请稍候"
+  "progress": 0,
+  "message": "片段生成中，请稍候"
 }
 ```
 
-此时客户端应轮询 `GET /api/tasks/gif_mv001_120` 获取状态。
+客户端轮询 `GET /api/tasks/:taskId`，完成后重新请求 clip URL。
+
+---
+
+#### GET `/api/movies/:id/clips`
+
+列出已缓存的预览片段。
+
+**响应 - 200 OK**
+
+```json
+{
+  "movieId": "mv_001",
+  "total": 3,
+  "clips": [
+    {
+      "timestamp": 120,
+      "startTime": 118.5,
+      "endTime": 125.0,
+      "duration": 6.5,
+      "url": "/api/movies/mv_001/clip?t=120",
+      "staticUrl": "/movie/static/clips/mv_001/t120.mp4",
+      "size": 1048576,
+      "createdAt": "2026-06-18T10:05:00Z"
+    }
+  ]
+}
+```
 
 ---
 
@@ -361,22 +312,33 @@ Content-Length: 204800
 
 ```json
 {
-  "taskId": "task_abc123",
-  "type": "movie_process",
-  "status": "processing",
-  "progress": 60,
-  "message": "正在提取帧索引：已完成 100/170"
+  "task": {
+    "taskId": "task_abc123",
+    "type": "movie_process",
+    "status": "processing",
+    "progress": 60,
+    "message": "正在提取封面...",
+    "movieId": "mv_001"
+  }
 }
 ```
 
-**status 状态枚举**
+**任务类型**
+
+| type | 说明 |
+|------|------|
+| `movie_process` | 入库：封面 + 帧索引 |
+| `clip_generate` | 片段生成 |
+| `frame_extract` | 按需帧提取（内部） |
+
+**status 枚举**
 
 | 值 | 说明 |
 |----|------|
-| `pending` | 任务已创建，等待执行 |
+| `pending` | 等待执行 |
 | `processing` | 正在处理 |
-| `completed` | 处理完成 |
-| `failed` | 处理失败 |
+| `completed` | 完成 |
+| `failed` | 失败 |
 
 ---
 
@@ -388,39 +350,38 @@ Content-Length: 204800
 {
   "error": "ERROR_CODE",
   "message": "人类可读的错误描述",
-  "code": <HTTP状态码>,
-  "details": {}  // 可选，附加信息
+  "code": 400
 }
 ```
 
 **错误码表**
 
-| ERROR_CODE | HTTP 状态码 | 说明 |
-|------------|-------------|------|
+| ERROR_CODE | HTTP | 说明 |
+|------------|------|------|
 | `UNSUPPORTED_FORMAT` | 400 | 不支持的文件格式 |
-| `FILE_TOO_LARGE` | 400 | 文件超过大小限制 |
 | `INVALID_TIMESTAMP` | 400 | 无效的时间戳 |
+| `MISSING_TIMESTAMP` | 400 | 缺少 `t` 参数 |
+| `INVALID_PATH` | 400 | 路径不在允许目录内 |
 | `MOVIE_NOT_FOUND` | 404 | 电影不存在 |
 | `COVER_NOT_READY` | 404 | 封面未生成 |
-| `FRAME_NOT_FOUND` | 404 | 帧不存在 |
+| `FRAME_NOT_FOUND` | 404 | 帧提取失败 |
+| `FILE_NOT_FOUND` | 404 | 本地文件不存在 |
+| `DIRECTORY_NOT_FOUND` | 404 | 本地目录未配置 |
 | `TASK_NOT_FOUND` | 404 | 任务不存在 |
-| `GIF_GENERATION_FAILED` | 500 | GIF 生成失败 |
 | `STORAGE_ERROR` | 500 | 存储读写错误 |
-| `SERVER_BUSY` | 503 | 服务器繁忙（CPU 限制中） |
+| `SERVER_BUSY` | 503 | CPU 负载过高 |
 
 ---
 
-## 3. 数据库设计
+## 3. 数据设计
 
 ### 3.1 设计说明
 
-本应用为单用户场景，**不引入关系型数据库**，所有元数据以 JSON 文件存储。电影数量有限（数十到数百部），JSON 文件查询性能足够，且便于备份和迁移。
-
-> 若未来扩展为多用户或数据量激增，可迁移至 SQLite 或 PostgreSQL。
+单用户场景，**不引入关系型数据库**，元数据以 JSON 文件存储。
 
 ### 3.2 数据模型
 
-#### 电影元数据表 (`movies.json`)
+#### 电影元数据 (`movies.json`)
 
 ```json
 {
@@ -429,38 +390,20 @@ Content-Length: 204800
       "id": "mv_xxx",
       "name": "电影名称",
       "originalName": "原始文件名",
-      "originalPath": "/storage/movies/xxx.mkv",
+      "originalPath": "/mnt/movies/xxx.mkv",
       "size": 8589934592,
       "duration": 10180.5,
       "resolution": "1920x1080",
       "codec": "h264",
-      "bitrate": 8500000,
       "uploadedAt": "2026-06-01T08:30:00Z",
       "status": "ready",
       "coverFile": "mv_xxx.jpg",
-      "frameInterval": 60,
-      "totalFrames": 170,
-      "createdAt": "2026-06-01T08:30:00Z",
-      "updatedAt": "2026-06-01T08:35:00Z"
+      "frameInterval": 5,
+      "totalFrames": 2036
     }
   ]
 }
 ```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | 唯一标识，格式 `mv_{random8}` |
-| `name` | string | 显示名称（用户可修改） |
-| `originalName` | string | 原始上传文件名 |
-| `originalPath` | string | 电影文件在服务器上的存储路径 |
-| `size` | number | 文件大小（字节） |
-| `duration` | number | 时长（秒，精确到毫秒） |
-| `resolution` | string | 分辨率，如 `1920x1080` |
-| `codec` | string | 视频编码 |
-| `status` | string | `uploading` / `processing` / `ready` / `error` |
-| `coverFile` | string | 封面文件名（含扩展名） |
-| `frameInterval` | number | 预抽帧间隔（秒），默认 60 |
-| `totalFrames` | number | 预抽帧总数 |
 
 #### 任务表 (`tasks.json`)
 
@@ -469,59 +412,40 @@ Content-Length: 204800
   "tasks": [
     {
       "taskId": "task_abc123",
-      "type": "movie_process | gif_generate | frame_extract",
+      "type": "movie_process | clip_generate",
       "movieId": "mv_xxx",
-      "status": "pending | processing | completed | failed",
-      "progress": 60,
-      "message": "正在提取帧索引",
+      "status": "completed",
+      "progress": 100,
+      "message": "处理完成",
       "params": {},
-      "createdAt": "2026-06-01T08:30:00Z",
-      "updatedAt": "2026-06-01T08:35:00Z",
-      "completedAt": null
+      "createdAt": "2026-06-01T08:30:00Z"
     }
   ]
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `taskId` | string | 任务唯一标识 |
-| `type` | string | 任务类型 |
-| `movieId` | string | 关联的电影 ID |
-| `status` | string | 任务状态 |
-| `progress` | number | 进度 0-100 |
-| `message` | string | 状态消息 |
-| `params` | object | 任务参数（如 GIF 的时间戳、宽度等） |
-| `error` | string | 失败时的错误信息 |
-
 ### 3.3 目录结构
 
 ```
-/data/
-├── movies.json           # 电影元数据
-├── tasks.json             # 任务状态
-└── storage/
-    ├── originals/         # 原始电影文件（可选，节省 SSD 空间则跳过）
-    ├── covers/           # 封面图
-    │   └── {movieId}.jpg
-    ├── frames/           # 预抽帧（按电影 ID 分目录）
-    │   └── {movieId}/
-    │       ├── 0.jpg
-    │       ├── 60.jpg
-    │       ├── 120.jpg
-    │       └── ...
-    ├── clips/            # MP4 预览片段（前端默认使用）
-    │   └── {movieId}/
-    ├── gifs/             # GIF 动图（可选/兼容）
-    │   └── {movieId}/
-    │       └── t{timestamp}_w{width}.gif
-    └── temp/             # ffmpeg 临时文件
-        └── {taskId}/
+DATA_PATH/
+├── movies.json
+└── tasks.json
+
+STORAGE_PATH/
+├── covers/
+│   └── {movieId}.jpg
+├── frames/
+│   └── {movieId}/
+│       └── {timestamp}.jpg    # 按需生成
+├── clips/
+│   └── {movieId}/
+│       ├── t{timestamp}.mp4
+│       └── t{timestamp}.json  # 片段元数据（起止时间）
+└── temp/
+    └── {taskId}/
 ```
 
-> **SSD vs 机械盘策略**：  
-> - `covers/`、`frames/`、`gifs/` 放在 SSD 上，保证帧提取和 GIF 生成的 I/O 性能  
-> - `storage/originals/` 可选：若服务器 SSD 充足则存储电影文件；若 SSD 紧张，电影文件保留在机械盘原位置，通过 `originalPath` 字段指向机械盘路径，ffmpeg 支持直接读取机械盘文件（I/O 会慢但不影响其他方面）
+> 电影源文件保留在 `LOCAL_MOVIES_DIR` 原位置，通过 `originalPath` 引用，ffmpeg 直接读取。
 
 ---
 
@@ -542,192 +466,117 @@ movie-frame-browser/
 │   ├── .env.example
 │   ├── package.json
 │   └── src/
-│       ├── index.js              # 启动、目录初始化、缓存清理
+│       ├── index.js              # 启动、缓存清理、任务清理
 │       ├── app.js                # Express 中间件与静态挂载
 │       ├── config/index.js
 │       ├── routes/               # movies, tasks, health
 │       ├── controllers/
 │       ├── services/
-│       │   ├── ffmpegService.js
+│       │   ├── ffmpegService.js  # 封面、抽帧、片段、关键帧探测
 │       │   ├── cacheService.js
 │       │   ├── storageService.js
-│       │   ├── movieProcessService.js  # 入库：封面 + 预抽帧
+│       │   ├── movieProcessService.js
 │       │   └── taskQueue.js
 │       ├── utils/
-│       │   ├── logger.js
-│       │   ├── idGenerator.js
-│       │   ├── timeFormatter.js
-│       │   ├── frameInterval.js        # 时长自适应抽帧间隔
+│       │   ├── frameInterval.js
+│       │   ├── cpuLoadMonitor.js
 │       │   ├── pathSecurity.js
-│       │   └── staticUrl.js            # PUBLIC_PATH 静态 URL
+│       │   └── staticUrl.js
 │       └── middlewares/
 └── frontend/
     ├── vite.config.js            # base: /movie/
     └── src/
-        ├── views/                # Home, Browse, MovieDetail
-        ├── components/           # Timeline, FrameDisplay, GifPreview, ...
-        ├── composables/          # useMovieApi, useFrameLoader
+        ├── views/                # Home, Browse, Gallery, MovieDetail
+        ├── components/           # Timeline, FrameDisplay, ClipPreview, ...
+        ├── composables/          # useMovieApi, useFrameLoader, useClipLoader
         ├── stores/movieStore.js
         └── router/index.js
 ```
-
-运行时数据目录由 `.env` 指定（见 `backend/.env.example`）：`DATA_PATH`（JSON 元数据）、`STORAGE_PATH`（covers/frames/clips 与 temp）。
 
 ### 4.2 模块划分
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `ffmpegService` | 封面、抽帧、MP4 clip | `extractCover()`, `extractFrame()`, `generatePreviewClip()`, `getVideoInfo()` |
+| `ffmpegService` | 封面、抽帧、片段、关键帧探测 | `extractCover()`, `extractFrame()`, `generatePreviewClip()`, `computePreviewSegment()` |
 | `cacheService` | movies.json / tasks.json | `getMovies()`, `saveMovie()`, `getTask()`, `updateTask()` |
-| `storageService` | 路径与文件 CRUD、缓存体积统计 | `getCoverPath()`, `getFramePath()`, `getClipPath()`, `deleteMovieCache()` |
+| `storageService` | 路径与文件 CRUD、缓存统计 | `getCoverPath()`, `getFramePath()`, `getClipPath()`, `deleteMovieCache()` |
 | `movieProcessService` | 本地选择后的入库流水线 | `processMovieIngest()` |
 | `taskQueue` | FFmpeg 并发与 CPU 阈值 | `enqueue()`, `PRIORITY` |
 | `movieController` | REST 入口 | 本地选择、帧/clip、缓存 API |
-| `taskController` | 任务查询 | `getTaskStatus()` |
+| `taskController` | 任务查询与取消 | `getTaskStatus()`, `getQueueStatus()` |
 
-### 4.3 依赖包清单
+### 4.3 依赖包
+
+**后端**
 
 ```json
 {
   "dependencies": {
-    "express": "^4.18.2",          // Web 框架
-    "fluent-ffmpeg": "^2.1.2",     // ffmpeg 封装
-    "uuid": "^9.0.0",              // ID 生成
-    "winston": "^3.11.0",          // 日志
-    "dotenv": "^16.3.1",           // 环境变量
-    "cors": "^2.8.5",              // 跨域
-    "compression": "^1.7.4"         // 响应压缩
-  },
-  "devDependencies": {
-    "jest": "^29.7.0",             // 测试框架
-    "supertest": "^6.3.3",         // API 测试
-    "nodemon": "^3.0.2"            // 开发热重载
+    "express": "^4.18.2",
+    "fluent-ffmpeg": "^2.1.2",
+    "uuid": "^9.0.0",
+    "winston": "^3.11.0",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "compression": "^1.7.4"
   }
 }
 ```
 
-> **说明**：
-> - `fluent-ffmpeg` 已有较好的维护和生态，若追求更现代的 API 可考虑 `node-fluent-ffmpeg` 或直接使用 `child_process.spawn` 封装 ffmpeg 命令（更稳定，无依赖兼容问题）
-> - 不引入数据库依赖，纯文件存储降低运维复杂度
-> - 缓存清理在 `index.js` 启动时与定时逻辑中执行，无需 node-cron
-> - 不引入 Redis，本地文件 + JSON 元数据即可
+**前端**
+
+```json
+{
+  "dependencies": {
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0",
+    "axios": "^1.6.7",
+    "pinia": "^2.1.7"
+  }
+}
+```
 
 ---
 
 ## 5. 性能与限制策略
 
-### 5.1 CPU 限制方案
-
-**目标**：单核 CPU 占用 ≤ 50%，可利用多核但单个 ffmpeg 进程不超过限制。
-
-#### 方案：进程池 + 信号量
+### 5.1 CPU 限制
 
 ```
 ┌─────────────────────────────────────────────────┐
 │                 主进程 (Node.js)                  │
 │  ┌─────────────┐   ┌──────────────────────────┐  │
 │  │  Express    │   │   Task Queue (内存)        │  │
-│  │  Web Server │   │  ┌─────────────────────┐  │  │
-│  └──────┬──────┘   │  │ [task] [task] ...   │  │  │
-│         │          │  └──────────┬──────────┘  │  │
-│         │          └─────────────┼────────────┘  │
-│         │                         │               │
-│         ▼                         ▼               │
+│  └──────┬──────┘   │  信号量 + CPU 负载检测     │  │
+│         │          └─────────────┬──────────────┘  │
+│         ▼                        ▼                 │
 │  ┌──────────────────────────────────────────┐    │
-│  │   Worker Manager (控制并发)               │    │
-│  │   - 信号量控制同时运行的 ffmpeg 进程数    │    │
-│  │   - 动态检测 CPU 负载                     │    │
-│  │   - 任务优先级（GIF > 帧 > 封面）         │    │
-│  └───────────────────┬──────────────────────┘    │
-└──────────────────────┼──────────────────────────┘
-                       │
-       ┌───────────────┼───────────────┐
-       ▼               ▼               ▼
-  ┌─────────┐    ┌─────────┐    ┌─────────┐
-  │ffmpeg 1 │    │ffmpeg 2 │    │ffmpeg 3 │   ... N 个
-  └─────────┘    └─────────┘    └─────────┘
+│  │   ffmpeg 进程池（MAX_CONCURRENT_FFMPEG）  │    │
+│  └──────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────┘
 ```
 
-**实现要点**：
+1. **信号量**：`MAX_CONCURRENT_FFMPEG`（默认 `cpuCores / 2`）
+2. **CPU 负载检测**：`cpuLoadMonitor` 每 5 秒检测，负载 > 阈值时暂停入队
+3. **任务优先级**：`clip_generate` > 帧提取 > 封面提取
+4. **单进程限制**：`FFMPEG_THREADS=1`
 
-1. **Semaphore（信号量）**：限制同时运行的 ffmpeg 进程数  
-   - `MAX_CONCURRENT_FFMPEG = Math.max(1, Math.floor(os.cpus().length / 2))`  
-   - 例：4 核 CPU → 最多 2 个 ffmpeg 并行
-
-2. **CPU 负载检测**：每 5 秒检测一次系统负载 `loadavg`  
-   - 若 1 分钟平均负载 > CPU 核心数 × 0.8，暂停新任务入队
-   - 已有任务继续完成，不强制终止
-
-3. **任务优先级**：  
-   - `high`：GIF 生成（用户主动触发，等待中）  
-   - `normal`：帧提取（后台预抽）  
-   - `low`：封面提取（一次性）
-
-4. **单个 ffmpeg 进程限制**：
-   - 设置 `-threads 1`，限制单进程只使用 1 个 CPU 核心
-   - 多进程叠加时，总占用 ≤ 50%
-
-### 5.2 多核利用策略
-
-| 场景 | 策略 |
-|------|------|
-| 帧提取（批量） | 多个 ffmpeg 进程并行（受信号量限制），每个单线程 |
-| GIF 生成 | 单 ffmpeg 进程，动态滤镜合成 6 秒动图 |
-| Web 服务 | Node.js 主进程 + Express（I/O 密集，天然异步） |
-| 静态文件 | Nginx 直接服务，不走 Node.js，零 CPU 消耗 |
-
-> **Nginx 配置要点**：Nginx 作为静态资源服务器，直接返回 `covers/`、`frames/`、`gifs/` 下的文件，避免 Node.js 读写文件的开销。
-
-### 5.3 缓存淘汰策略
-
-#### 帧缓存
-
-- **预抽帧**：每部电影按 60 秒间隔预抽帧（可配置）
-- **缓存保留**：所有预抽帧永久保留直到电影被删除
-- **按需帧**：非预抽帧时间点的帧，用完即删（TTL: 1 小时）
-- **LRU 清理**：磁盘空间不足时，优先删除最久未访问的按需帧
-
-#### GIF 缓存
-
-- **永久缓存**：已生成的 GIF 永久保留（用户可能反复查看）
-- **命名唯一**：按 `t{timestamp}_w{width}_fps{fps}` 命名，相同参数命中缓存
-
-#### 清理规则
+### 5.2 缓存策略
 
 | 缓存类型 | 保留策略 | 淘汰触发 |
 |----------|----------|----------|
 | 封面 | 永久 | 删除电影时 |
-| 预抽帧 | 永久 | 删除电影时 |
-| 按需帧 | TTL 1 小时 | 定时任务每 6 小时清理 |
-| GIF | 永久 | 删除电影时 |
-| 临时文件 | TTL 24 小时 | 每次启动清理 + 定时任务每小时清理 |
+| 帧图（按需） | 永久 | 删除电影时 / LRU 全局清理 |
+| 片段 | 永久 | 删除电影时 / LRU 全局清理 |
+| 临时文件 | 启动清理 | 每次启动 |
 
-### 5.4 并发控制
-
-由于是**单用户应用**，并发不是主要瓶颈，但仍需处理以下情况：
+### 5.3 并发控制
 
 | 场景 | 控制策略 |
 |------|----------|
-| 多帧同时请求 | 使用内存缓存（LRU Cache，最多 50 张帧图），避免重复磁盘 I/O |
-| GIF 生成冲突 | 相同参数的 GIF 生成请求合并为一个，等待同一结果 |
-| 上传 + 已有任务 | 队列排队，优先处理已有队列 |
-| 客户端轮询 | 支持 `ETag`/`Last-Modified`，减少无效请求 |
-
-#### 简单内存缓存（LRU）
-
-```javascript
-class LRUCache {
-  constructor(maxSize = 50) {
-    this.cache = new Map();
-    this.maxSize = maxSize;
-  }
-  get(key) { /* 命中并移到末尾 */ }
-  set(key, value) { /* 超出容量则淘汰最老的 */ }
-}
-```
-
-- 每个请求的帧图先查缓存，命中则直接返回
-- 未命中则从磁盘读取或调用 ffmpeg 提取，结果写入缓存
+| 同参数片段生成 | 合并为同一任务，避免重复入队 |
+| 客户端轮询 | 任务完成后重新请求资源 URL |
+| 静态文件 | Nginx 直接服务，减轻 Node.js 负担 |
 
 ---
 
@@ -736,32 +585,28 @@ class LRUCache {
 ### 6.1 ffmpeg 常用命令参考
 
 ```bash
-# 提取封面（指定时间点，-ss 放前面加速定位）
+# 提取封面
 ffmpeg -ss 00:05:30 -i input.mkv -vframes 1 -q:v 2 cover.jpg
 
 # 提取指定时间戳的帧
 ffmpeg -ss 120 -i input.mkv -vframes 1 -q:v 2 -vf "scale=1280:-1" frame.jpg
 
-# 生成 GIF（6秒窗口，320宽，10fps）
-ffmpeg -ss 117 -t 6 -i input.mkv \
-  -vf "fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
-  -loop 0 output.gif
+# 生成预览片段（关键帧对齐后截取）
+ffmpeg -ss 118.5 -to 125.0 -i input.mkv -c:v libx264 -preset fast clip.mp4
 ```
 
-### 6.2 移动端适配参考
+### 6.2 部署要点
 
-- 移动端帧图宽度上限：1280px
-- 桌面端帧图宽度上限：1920px
-- GIF 统一宽度：320px（节省流量）
-- 时间轴高度：桌面 48px，移动 56px（触控更友好）
-- 触控热区最小 44×44px（iOS HIG 标准）
+- 前端 `base: '/movie/'`，后端 `PUBLIC_PATH=/movie`
+- Nginx：`location /movie/` → `frontend/dist`，`location /api/` → 后端
+- 静态资源路径与 `STORAGE_PATH` 一致，参考 `deploy/nginx.conf`
+- PM2 守护后端，参考 `deploy/deploy.sh`
 
 ### 6.3 后续扩展方向
 
 | 方向 | 说明 |
 |------|------|
-| 帧批注 | 在帧上添加文字/涂鸦标注 |
-| 播放预览 | 点击帧后直接播放对应片段视频 |
-| 多语言 | 国际化（i18n）界面 |
-| 用户认证 | 添加登录认证，支持多用户 |
-| 数据库迁移 | 数据量大时迁移至 SQLite/PostgreSQL |
+| 文件上传 | 支持 multipart 上传入库 |
+| 用户认证 | 多用户场景 |
+| 数据库迁移 | 数据量大时迁移至 SQLite |
+| WebP 帧图 | 减小存储体积 |

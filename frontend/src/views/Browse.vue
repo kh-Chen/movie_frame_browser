@@ -254,7 +254,7 @@ const router = useRouter()
 const route = useRoute()
 const store = useMovieStore()
 const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl, getKeyframe, extractAllKeyframes } = useMovieApi()
-const { preloadFrames, isLoading: isFrameLoading } = useFrameLoader()
+const { isLoading: isFrameLoading } = useFrameLoader()
 
 // State
 const movieId = ref(props.id)
@@ -285,11 +285,6 @@ const showExtractedNotice = ref(false)
 const showExtractStarted = ref(false)
 const isDeleting = ref(false)
 const isExtracting = ref(false)
-
-// Preload state
-let preloadTimer = null
-
-const PRELOAD_RANGE_SEC = 1
 
 // Computed
 const currentFrameUrl = computed(() => {
@@ -334,10 +329,8 @@ const loadMovie = async () => {
     const queryTime = parseFloat(route.query.t)
     if (!isNaN(queryTime) && queryTime >= 0 && queryTime <= data.duration) {
       currentTimestamp.value = queryTime
-      schedulePreload(queryTime)
     } else {
       currentTimestamp.value = 0
-      schedulePreload(0)
     }
   } catch (error) {
     console.error('Failed to load movie:', error)
@@ -363,7 +356,6 @@ const seekBy = (deltaSec) => {
   )
   if (next === currentTimestamp.value) return
   currentTimestamp.value = next
-  schedulePreload(next)
 }
 
 const stepFrame = async (direction) => {
@@ -374,7 +366,6 @@ const stepFrame = async (direction) => {
     const next = data.timestamp
     if (next === currentTimestamp.value) return
     currentTimestamp.value = next
-    schedulePreload(next)
   } catch (error) {
     console.error('Keyframe step failed:', error)
   }
@@ -392,29 +383,6 @@ const handleDragging = (timestamp) => {
     stopClipPreview()
   }
   currentTimestamp.value = timestamp
-  // Cancel any scheduled preload during drag
-  if (preloadTimer) {
-    clearTimeout(preloadTimer)
-    preloadTimer = null
-  }
-}
-
-// Schedule preload after 300ms of no activity
-const schedulePreload = (timestamp) => {
-  if (preloadTimer) {
-    clearTimeout(preloadTimer)
-  }
-  
-  preloadTimer = setTimeout(() => {
-    preloadFrames(
-      movieId.value,
-      timestamp,
-      PRELOAD_RANGE_SEC,
-      1280,
-      movie.value?.fps,
-      movie.value?.duration
-    )
-  }, 300)
 }
 
 const handleKeydown = (event) => {
@@ -448,7 +416,6 @@ const continueClipSegment = async () => {
   const nextTs = await continueToNextClip(movie.value.duration)
   if (nextTs == null) return
   currentTimestamp.value = nextTs
-  schedulePreload(nextTs)
 }
 
 // Go to gallery
@@ -460,7 +427,6 @@ const goToGallery = () => {
 const goToCover = () => {
   stopClipPreview()
   currentTimestamp.value = 0
-  schedulePreload(0)
 }
 
 // Go back
@@ -485,7 +451,6 @@ const handleBrowseKeyframes = () => {
 
 const handleKeyframeSelect = (timestamp) => {
   currentTimestamp.value = timestamp
-  schedulePreload(timestamp)
   showKeyframeBrowser.value = false
 }
 
@@ -559,9 +524,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (preloadTimer) {
-    clearTimeout(preloadTimer)
-  }
   resetClip()
   window.removeEventListener('popstate', handlePopState)
   window.removeEventListener('keydown', handleKeydown)

@@ -98,24 +98,6 @@ export function useFrameLoader() {
   }
   
   /**
-   * Preload frames around a timestamp
-   */
-  const preloadFrames = async (movieId, timestamp, range = 5, width = 1280, fps = DEFAULT_FPS, duration = Infinity) => {
-    const promises = []
-    const interval = 1 // 1 second interval for preloading
-    
-    for (let i = -range; i <= range; i++) {
-      if (i === 0) continue // Skip current timestamp
-      const t = timestamp + i * interval
-      if (t >= 0) {
-        promises.push(getFrame(movieId, t, width, fps, duration))
-      }
-    }
-    
-    await Promise.allSettled(promises)
-  }
-  
-  /**
    * Check if frame is loading
    */
   const isLoading = (timestamp, fps = DEFAULT_FPS, duration = Infinity) => {
@@ -140,7 +122,6 @@ export function useFrameLoader() {
   
   return {
     getFrame,
-    preloadFrames,
     isLoading,
     clearCache,
     getCacheSize,

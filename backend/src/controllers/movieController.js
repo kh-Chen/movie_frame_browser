@@ -641,6 +641,132 @@ async function listCachedClips(req, res, next) {
 }
 
 /**
+ * Delete a single non-keyframe cached frame image
+ */
+async function deleteCachedFrame(req, res, next) {
+  try {
+    const { id, timestamp: timestampParam } = req.params;
+    const timestamp = parseFloat(timestampParam);
+
+    if (!Number.isFinite(timestamp)) {
+      return res.status(400).json({
+        error: 'INVALID_TIMESTAMP',
+        message: '无效的时间戳',
+        code: 400,
+      });
+    }
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    const fps = movie.fps || DEFAULT_FPS;
+    const frameIndex = toFrameIndex(timestamp, fps, movie.duration);
+    const result = await storageService.deleteNonKeyframeFrame(id, frameIndex, fps);
+
+    if (!result.deleted) {
+      return res.status(404).json({
+        error: 'FRAME_NOT_FOUND',
+        message: '未找到可删除的非关键帧图片',
+        code: 404,
+      });
+    }
+
+    res.json({
+      message: result.keyframeRetained
+        ? '非关键帧图片已删除，关键帧图片已保留'
+        : '帧图片已删除',
+      movieId: id,
+      timestamp: result.timestamp,
+      frameIndex: result.frameIndex,
+      keyframeRetained: result.keyframeRetained === true,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete all non-keyframe cached frame images for a movie
+ */
+async function deleteNonKeyframeFrames(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    const { deleted, freed } = await storageService.deleteAllNonKeyframeFrames(id);
+
+    res.json({
+      message: deleted > 0 ? `已删除 ${deleted} 张非关键帧图片` : '没有可删除的非关键帧图片',
+      movieId: id,
+      deleted,
+      freed,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete a cached preview clip
+ */
+async function deleteCachedClip(req, res, next) {
+  try {
+    const { id, timestamp: timestampParam } = req.params;
+    const timestamp = parseFloat(timestampParam);
+
+    if (!Number.isFinite(timestamp)) {
+      return res.status(400).json({
+        error: 'INVALID_TIMESTAMP',
+        message: '无效的时间戳',
+        code: 400,
+      });
+    }
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    const result = await storageService.deleteCachedClip(id, timestamp);
+
+    if (!result.deleted) {
+      return res.status(404).json({
+        error: 'CLIP_NOT_FOUND',
+        message: '片段不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    res.json({
+      message: '片段已删除',
+      movieId: id,
+      timestamp: result.timestamp,
+      freed: result.freed,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get cache status
  */
 async function getCacheStatus(req, res, next) {
@@ -1012,6 +1138,9 @@ module.exports = {
   getClip,
   listCachedFrames,
   listCachedClips,
+  deleteCachedFrame,
+  deleteNonKeyframeFrames,
+  deleteCachedClip,
   getCacheStatus,
   clearCache,
   browseLocalDirectory,

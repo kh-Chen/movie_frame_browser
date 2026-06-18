@@ -8,6 +8,7 @@ const path = require('path');
 const config = require('../config');
 const logger = require('../utils/logger');
 const {
+  DEFAULT_FPS,
   formatFrameFilename,
   formatKeyframeFilename,
   frameIndexToTimestamp,
@@ -479,6 +480,86 @@ async function listCachedClips(movieId) {
 }
 
 /**
+ * Delete a single non-keyframe frame image (.jpg, not .key.jpg).
+ * @returns {Promise<{ deleted: boolean, reason?: string, frameIndex?: number, timestamp?: number, keyframeRetained?: boolean }>}
+ */
+async function deleteNonKeyframeFrame(movieId, frameIndex, fps = DEFAULT_FPS) {
+  const plainPath = getFramePath(movieId, frameIndex);
+  const keyPath = getKeyframeFramePath(movieId, frameIndex);
+
+  if (!(await fileExists(plainPath))) {
+    return { deleted: false, reason: 'NOT_FOUND' };
+  }
+
+  await fs.unlink(plainPath);
+  const keyframeRetained = await fileExists(keyPath);
+
+  return {
+    deleted: true,
+    frameIndex,
+    timestamp: frameIndexToTimestamp(frameIndex, fps),
+    keyframeRetained,
+  };
+}
+
+/**
+ * Delete all non-keyframe frame images for a movie.
+ * @returns {Promise<{ deleted: number, freed: number }>}
+ */
+async function deleteAllNonKeyframeFrames(movieId) {
+  const dir = path.join(config.paths.frames, movieId);
+  let deleted = 0;
+  let freed = 0;
+
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const parsed = parseFrameFilename(entry.name);
+      if (!parsed || parsed.isKeyframe) continue;
+
+      const fullPath = path.join(dir, entry.name);
+      const stat = await fs.stat(fullPath);
+      await fs.unlink(fullPath);
+      deleted += 1;
+      freed += stat.size;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  return { deleted, freed };
+}
+
+/**
+ * Delete a cached preview clip and its metadata sidecar.
+ * @returns {Promise<{ deleted: boolean, freed: number, timestamp: number }>}
+ */
+async function deleteCachedClip(movieId, timestamp) {
+  const clipPath = getClipPath(movieId, timestamp);
+  const metaPath = getClipMetaPath(movieId, timestamp);
+  let freed = 0;
+  let deleted = false;
+
+  for (const filePath of [clipPath, metaPath]) {
+    try {
+      const stat = await fs.stat(filePath);
+      await fs.unlink(filePath);
+      freed += stat.size;
+      deleted = true;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
+  return { deleted, freed, timestamp };
+}
+
+/**
  * Find a cached clip whose segment covers the requested timestamp.
  * When multiple clips cover the point, prefer the one whose center is closest.
  * @param {string} movieId
@@ -568,5 +649,8 @@ module.exports = {
   getFileStats,
   listCachedFrames,
   listCachedClips,
+  deleteNonKeyframeFrame,
+  deleteAllNonKeyframeFrames,
+  deleteCachedClip,
   findCoveringClip,
 };

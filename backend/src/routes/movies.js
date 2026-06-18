@@ -18,12 +18,15 @@ router.get('/', movieController.getMovies);
 
 router.get('/:id/cover', movieController.getMovieCover);
 router.get('/:id/frames/cached', movieController.listCachedFrames);
+router.delete('/:id/frames/cached/non-keyframes', movieController.deleteNonKeyframeFrames);
+router.delete('/:id/frames/cached/:timestamp', movieController.deleteCachedFrame);
 router.get('/:id/frames', movieController.getFrameIndex);
 router.get('/:id/frames/:timestamp', movieController.getFrame);
 router.get('/:id/keyframe', movieController.getKeyframe);
 router.get('/:id/keyframes', movieController.listKeyframes);
 router.post('/:id/keyframes/extract', movieController.extractAllKeyframes);
 router.get('/:id/clips', movieController.listCachedClips);
+router.delete('/:id/clips/:timestamp', movieController.deleteCachedClip);
 router.get('/:id/clip', movieController.getClip);
 router.get('/:id', movieController.getMovie);
 router.delete('/:id', movieController.deleteMovie);

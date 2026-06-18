@@ -113,6 +113,20 @@ export const useMovieApi = () => {
     return api.get(`/movies/${id}/clips`)
   }
 
+  const deleteCachedFrame = async (id, timestamp) => {
+    const t = formatFrameTimestamp(timestamp)
+    return api.delete(`/movies/${id}/frames/cached/${t}`)
+  }
+
+  const deleteNonKeyframeFrames = async (id) => {
+    return api.delete(`/movies/${id}/frames/cached/non-keyframes`)
+  }
+
+  const deleteCachedClip = async (id, timestamp) => {
+    const t = Math.round(timestamp * 1000) / 1000
+    return api.delete(`/movies/${id}/clips/${t}`)
+  }
+
   const extractAllKeyframes = async (id) => {
     return api.post(`/movies/${id}/keyframes/extract`)
   }
@@ -140,6 +154,9 @@ export const useMovieApi = () => {
     cancelTask,
     getCachedFrames,
     getCachedClips,
+    deleteCachedFrame,
+    deleteNonKeyframeFrames,
+    deleteCachedClip,
     extractAllKeyframes,
     getKeyframes,
   }

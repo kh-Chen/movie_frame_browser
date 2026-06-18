@@ -36,6 +36,15 @@
 
       <!-- Frames grid -->
       <section v-if="activeTab === 'frames'" class="media-section">
+        <div v-if="nonKeyframeCount > 0" class="section-toolbar">
+          <button
+            class="bulk-delete-btn"
+            :disabled="isBulkDeletingFrames"
+            @click="handleDeleteAllNonKeyframes"
+          >
+            {{ isBulkDeletingFrames ? '删除中...' : `清除非关键帧 (${nonKeyframeCount})` }}
+          </button>
+        </div>
         <div v-if="frames.length === 0" class="empty-state">
           <span class="empty-icon">🖼️</span>
           <p>暂无已缓存的帧图片</p>
@@ -58,6 +67,15 @@
                 loading="lazy"
               />
               <span v-if="frame.isKeyframe" class="keyframe-badge">关键帧</span>
+              <button
+                v-if="!frame.isKeyframe"
+                class="delete-float-btn"
+                title="删除此帧"
+                :disabled="deletingFrameTs === frame.timestamp"
+                @click.stop="handleDeleteFrame(frame)"
+              >
+                {{ deletingFrameTs === frame.timestamp ? '…' : '✕' }}
+              </button>
             </div>
             <div class="media-info">
               <span class="media-time">{{ formatTime(frame.timestamp) }}</span>
@@ -92,6 +110,14 @@
               <div class="play-overlay">
                 <span class="play-icon">▶</span>
               </div>
+              <button
+                class="delete-float-btn"
+                title="删除此片段"
+                :disabled="deletingClipTs === clip.timestamp"
+                @click.stop="handleDeleteClip(clip)"
+              >
+                {{ deletingClipTs === clip.timestamp ? '…' : '✕' }}
+              </button>
             </div>
             <div class="media-info">
               <span class="media-time clip-range">{{ formatClipRange(clip) }}</span>
@@ -115,9 +141,19 @@
             />
             <div class="lightbox-footer">
               <span>{{ formatTime(selectedFrame.timestamp) }}</span>
-              <button class="lightbox-action" @click="goToBrowseAt(selectedFrame.timestamp)">
-                在浏览页查看
-              </button>
+              <div class="lightbox-actions">
+                <button
+                  v-if="!selectedFrame.isKeyframe"
+                  class="lightbox-delete"
+                  :disabled="deletingFrameTs === selectedFrame.timestamp"
+                  @click="handleDeleteFrame(selectedFrame, true)"
+                >
+                  {{ deletingFrameTs === selectedFrame.timestamp ? '删除中...' : '删除' }}
+                </button>
+                <button class="lightbox-action" @click="goToBrowseAt(selectedFrame.timestamp)">
+                  在浏览页查看
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -134,7 +170,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMovieApi } from '../composables/useMovieApi'
 import { DEFAULT_FPS } from '../utils/frameTimestamp'
@@ -149,7 +185,15 @@ const props = defineProps({
 })
 
 const router = useRouter()
-const { getMovie, getCachedFrames, getCachedClips, getFrameUrl } = useMovieApi()
+const {
+  getMovie,
+  getCachedFrames,
+  getCachedClips,
+  getFrameUrl,
+  deleteCachedFrame,
+  deleteNonKeyframeFrames,
+  deleteCachedClip,
+} = useMovieApi()
 
 const movieId = props.id
 const movie = ref(null)
@@ -160,6 +204,11 @@ const activeTab = ref('frames')
 const selectedFrame = ref(null)
 const showClip = ref(false)
 const selectedClipTimestamp = ref(0)
+const deletingFrameTs = ref(null)
+const deletingClipTs = ref(null)
+const isBulkDeletingFrames = ref(false)
+
+const nonKeyframeCount = computed(() => frames.value.filter((f) => !f.isKeyframe).length)
 
 const buildFrameUrl = (timestamp, width = 320) => (
   getFrameUrl(
@@ -211,6 +260,63 @@ const openFrame = (frame) => {
 const openClip = (clip) => {
   selectedClipTimestamp.value = clip.timestamp
   showClip.value = true
+}
+
+const handleDeleteFrame = async (frame, closeLightbox = false) => {
+  if (frame.isKeyframe) return
+  if (!window.confirm(`确定删除 ${formatTime(frame.timestamp)} 的非关键帧图片？`)) return
+
+  deletingFrameTs.value = frame.timestamp
+  try {
+    await deleteCachedFrame(movieId, frame.timestamp)
+    frames.value = frames.value.filter((f) => f.timestamp !== frame.timestamp)
+    if (closeLightbox && selectedFrame.value?.timestamp === frame.timestamp) {
+      selectedFrame.value = null
+    }
+  } catch (error) {
+    console.error('Failed to delete frame:', error)
+    window.alert('删除失败，请稍后重试')
+  } finally {
+    deletingFrameTs.value = null
+  }
+}
+
+const handleDeleteAllNonKeyframes = async () => {
+  const count = nonKeyframeCount.value
+  if (count === 0) return
+  if (!window.confirm(`确定删除全部 ${count} 张非关键帧图片？关键帧图片将保留。`)) return
+
+  isBulkDeletingFrames.value = true
+  try {
+    await deleteNonKeyframeFrames(movieId)
+    frames.value = frames.value.filter((f) => f.isKeyframe)
+    if (selectedFrame.value && !selectedFrame.value.isKeyframe) {
+      selectedFrame.value = null
+    }
+  } catch (error) {
+    console.error('Failed to delete non-keyframe frames:', error)
+    window.alert('批量删除失败，请稍后重试')
+  } finally {
+    isBulkDeletingFrames.value = false
+  }
+}
+
+const handleDeleteClip = async (clip) => {
+  if (!window.confirm(`确定删除片段 ${formatClipRange(clip)}？`)) return
+
+  deletingClipTs.value = clip.timestamp
+  try {
+    await deleteCachedClip(movieId, clip.timestamp)
+    clips.value = clips.value.filter((c) => c.timestamp !== clip.timestamp)
+    if (showClip.value && selectedClipTimestamp.value === clip.timestamp) {
+      showClip.value = false
+    }
+  } catch (error) {
+    console.error('Failed to delete clip:', error)
+    window.alert('删除失败，请稍后重试')
+  } finally {
+    deletingClipTs.value = null
+  }
 }
 
 const goBack = () => {
@@ -307,7 +413,7 @@ onMounted(() => {
 
 .page-content {
   flex: 1;
-  padding: 16px 20px 32px;
+  padding: 0 10px;
   max-width: 1200px;
   margin: 0 auto;
   width: 100%;
@@ -341,10 +447,32 @@ onMounted(() => {
   color: white;
 }
 
+.section-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.bulk-delete-btn {
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bulk-delete-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .media-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: 4px;
 }
 
 @media (min-width: 768px) {
@@ -392,6 +520,45 @@ onMounted(() => {
   font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.02em;
+  z-index: 1;
+}
+
+.delete-float-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  transition: color 0.2s ease, transform 0.15s ease;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.delete-float-btn:hover:not(:disabled) {
+  background: transparent;
+  color: #ff5252;
+}
+
+.delete-float-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.delete-float-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .media-thumb {
@@ -432,6 +599,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 10px;
+  gap: 8px;
 }
 
 .media-time {
@@ -536,10 +704,33 @@ onMounted(() => {
 .lightbox-footer {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   margin-top: 16px;
   color: white;
   font-family: monospace;
+  width: 100%;
+}
+
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lightbox-delete {
+  padding: 8px 16px;
+  background-color: rgba(244, 67, 54, 0.2);
+  border: 1px solid rgba(244, 67, 54, 0.5);
+  border-radius: 8px;
+  color: #ff8a80;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.lightbox-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .lightbox-action {

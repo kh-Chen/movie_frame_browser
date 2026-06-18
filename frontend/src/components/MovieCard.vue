@@ -1,13 +1,22 @@
 <template>
   <div class="movie-row" @click="handleClick">
     <div class="movie-name" :title="displayName">{{ displayName }}</div>
-    <div class="movie-meta">
-      <span v-if="movie.status === 'processing'" class="status-processing">
-        <span class="processing-dot"></span>
-        处理中
-      </span>
-      <span v-if="movie.duration" class="duration">{{ formatDuration(movie.duration) }}</span>
-      <span v-if="movie.resolution" class="resolution">{{ movie.resolution }}</span>
+    <div class="movie-meta-row">
+      <div class="movie-meta">
+        <span v-if="movie.status === 'processing'" class="status-processing">
+          <span class="processing-dot"></span>
+          处理中
+        </span>
+        <span v-if="movie.duration" class="duration">{{ formatDuration(movie.duration) }}</span>
+        <span v-if="movie.resolution" class="resolution">{{ movie.resolution }}</span>
+      </div>
+      <button
+        class="delete-btn"
+        title="删除电影"
+        @click.stop="emit('delete', movie)"
+      >
+        🗑️
+      </button>
     </div>
   </div>
 </template>
@@ -23,6 +32,8 @@ const props = defineProps({
     required: true
   },
 })
+
+const emit = defineEmits(['delete'])
 
 const router = useRouter()
 
@@ -41,9 +52,8 @@ const handleClick = () => {
 <style scoped>
 .movie-row {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 2px;
   padding: 8px 12px;
   background-color: var(--bg-secondary);
   border-radius: 8px;
@@ -61,8 +71,6 @@ const handleClick = () => {
 }
 
 .movie-name {
-  flex: 1;
-  min-width: 0;
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.35;
@@ -71,15 +79,22 @@ const handleClick = () => {
   overflow-wrap: anywhere;
 }
 
-.movie-meta {
+.movie-meta-row {
   display: flex;
-  flex-shrink: 0;
   align-items: center;
   gap: 8px;
+  min-height: 18px;
+}
+
+.movie-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
   font-size: 0.6875rem;
   color: var(--text-secondary);
-  white-space: nowrap;
-  padding-top: 1px;
 }
 
 .status-processing {
@@ -102,14 +117,27 @@ const handleClick = () => {
   50% { opacity: 0.4; }
 }
 
-@media (max-width: 480px) {
-  .movie-row {
-    flex-direction: column;
-    gap: 4px;
-  }
+.delete-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.6875rem;
+  line-height: 1;
+  opacity: 0.45;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: unset;
+}
 
-  .movie-meta {
-    padding-top: 0;
-  }
+.delete-btn:hover {
+  opacity: 1;
+  background-color: rgba(244, 67, 54, 0.15);
 }
 </style>

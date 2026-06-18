@@ -48,6 +48,7 @@
             v-for="movie in movies"
             :key="movie.id"
             :movie="movie"
+            @delete="confirmDelete"
           />
         </div>
       </section>
@@ -68,9 +69,27 @@
     
     <!-- Loading overlay -->
     <LoadingOverlay 
-      :visible="showGlobalLoading"
-      :text="globalLoadingText"
+      :visible="showGlobalLoading || isDeleting"
+      :text="isDeleting ? '正在删除...' : globalLoadingText"
     />
+
+    <!-- Delete confirmation -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showDeleteConfirm" class="confirm-overlay" @click.self="showDeleteConfirm = false">
+          <div class="confirm-modal">
+            <h3>确认删除</h3>
+            <p>确定要删除电影「{{ movieToDelete?.originalName || movieToDelete?.name }}」吗？相关缓存将一并清理，此操作不可撤销。</p>
+            <div class="confirm-actions">
+              <button class="cancel-btn" @click="showDeleteConfirm = false">取消</button>
+              <button class="delete-btn" @click="deleteMovie" :disabled="isDeleting">
+                {{ isDeleting ? '删除中...' : '删除' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
     
     <!-- Toast notification -->
     <Teleport to="body">
@@ -94,10 +113,13 @@ import TaskQueuePanel from '../components/TaskQueuePanel.vue'
 import LoadingOverlay from '../components/LoadingOverlay.vue'
 
 const store = useMovieStore()
-const { getMovies } = useMovieApi()
+const { getMovies, deleteMovie: apiDeleteMovie } = useMovieApi()
 
 // State
 const isLoading = ref(false)
+const isDeleting = ref(false)
+const showDeleteConfirm = ref(false)
+const movieToDelete = ref(null)
 const showCacheManager = ref(false)
 const showTaskQueue = ref(false)
 const showGlobalLoading = ref(false)
@@ -146,6 +168,29 @@ const handleSelectError = (error) => {
 // Handle cache cleared
 const handleCacheCleared = () => {
   showToast('缓存已清理', 'success')
+}
+
+const confirmDelete = (movie) => {
+  movieToDelete.value = movie
+  showDeleteConfirm.value = true
+}
+
+const deleteMovie = async () => {
+  if (!movieToDelete.value) return
+
+  isDeleting.value = true
+  try {
+    await apiDeleteMovie(movieToDelete.value.id)
+    store.removeMovie(movieToDelete.value.id)
+    showDeleteConfirm.value = false
+    movieToDelete.value = null
+    showToast('电影已删除', 'success')
+  } catch (error) {
+    console.error('Failed to delete movie:', error)
+    showToast(error?.message || '删除失败', 'error')
+  } finally {
+    isDeleting.value = false
+  }
 }
 
 // Show toast
@@ -346,5 +391,79 @@ onMounted(() => {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(20px);
+}
+
+/* Confirm modal */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 20px;
+}
+
+.confirm-modal {
+  background-color: var(--bg-secondary);
+  border-radius: 16px;
+  padding: 24px;
+  max-width: 320px;
+  width: 100%;
+}
+
+.confirm-modal h3 {
+  margin: 0 0 12px;
+  font-size: 1.125rem;
+  color: var(--text-primary);
+}
+
+.confirm-modal p {
+  margin: 0 0 20px;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.cancel-btn,
+.confirm-modal .delete-btn {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cancel-btn {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.confirm-modal .delete-btn {
+  background-color: #f44336;
+  color: #fff;
+}
+
+.confirm-modal .delete-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

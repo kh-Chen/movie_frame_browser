@@ -46,7 +46,7 @@ function getAdaptiveFrameInterval(durationSeconds) {
 // 任务队列（backend/src/services/taskQueue.js）
 const PRIORITY = {
   HIGH: 1,    // 片段生成（用户触发）
-  NORMAL: 2,  // 帧提取（按需）
+  NORMAL: 2,  // 帧提取（按需）、关键帧批量采集
   LOW: 3,     // 封面提取（入库）
 };
 
@@ -68,7 +68,20 @@ CPU_LOAD_THRESHOLD = 0.8  // 负载过高时暂停入队
 |------|----------|----------|
 | 入库时 | 用户选择本地电影 | 仅提取封面 + 写入帧索引元数据 |
 | 浏览时 | 时间轴 seek 到新时间点 | `getFrame` 按需提取并缓存 |
+| 步进时 | 滑动/方向键切换帧 | `getKeyframe` 探测相邻关键帧，再按需取帧 |
 | 片段预览时 | 用户点击预览 | `clip_generate` 异步任务 |
+| 关键帧采集 | 用户手动触发（浏览页 🎞️） | `keyframe_extract` 异步批量提取 |
+
+### 1.4 关键帧采集策略
+
+除自适应时间轴索引外，支持可选的**全片关键帧批量采集**：
+
+1. **探测**：`ffprobe` 分块探测全片关键帧时间戳，写入 `frames/{movieId}/keyframes.json`
+2. **提取**：单次 FFmpeg 进程（`-skip_frame nokey`）批量输出，再按时间戳重命名至 `frames/{movieId}/{ts}.jpg`
+3. **标记**：帧元数据 `isKeyframe: true`，电影元数据记录 `keyframesExtracted` / `keyframesCount`
+4. **用途**：瀑布流浏览（`KeyframeBrowser`）、媒体库关键帧标记、精确关键帧步进
+
+采集为后台低优先级任务（`PRIORITY.NORMAL`），与按需抽帧、片段生成共享 FFmpeg 信号量。
 
 ---
 
@@ -93,7 +106,8 @@ CPU_LOAD_THRESHOLD = 0.8  // 负载过高时暂停入队
 |------|----------|------|
 | 元数据 | `DATA_PATH/movies.json`, `tasks.json` | JSON 文件 |
 | 封面 | `STORAGE_PATH/covers/{movieId}.jpg` | 入库时生成 |
-| 帧图 | `STORAGE_PATH/frames/{movieId}/{ts}.jpg` | 按需生成，持久保留 |
+| 帧图 | `STORAGE_PATH/frames/{movieId}/{ts}.jpg` | 按需或批量关键帧采集生成，持久保留 |
+| 关键帧清单 | `STORAGE_PATH/frames/{movieId}/keyframes.json` | 批量采集完成后写入 |
 | 片段 | `STORAGE_PATH/clips/{movieId}/t{ts}.mp4` | 预览时生成，持久保留 |
 | 临时 | `STORAGE_PATH/temp/` | 启动时与定时清理 |
 
@@ -221,22 +235,26 @@ CPU_LOAD_THRESHOLD = 0.8  // 负载过高时暂停入队
 
 | 能力 | 状态 |
 |------|------|
+| 本地目录分层浏览（`local/browse`） | 已实现 |
 | 本地目录选择（`LOCAL_MOVIES_DIR`） | 已实现 |
 | 封面提取 + 自适应帧索引 | 已实现 |
 | 按需抽帧 + 磁盘缓存 | 已实现 |
+| 相邻关键帧步进（滑动/方向键） | 已实现 |
+| 全片关键帧批量采集 | 已实现 |
+| 关键帧瀑布流浏览（`KeyframeBrowser`） | 已实现 |
 | 时间轴浏览（`Browse.vue`） | 已实现 |
 | 内联 MP4 片段预览 + 续播 | 已实现 |
-| 媒体库（`Gallery.vue`） | 已实现 |
+| 媒体库（`Gallery.vue`，含关键帧标记） | 已实现 |
 | 任务队列面板 | 已实现 |
 | 缓存统计与清理 | 已实现 |
 | 子路径部署 `/movie/` | 已实现 |
 | 文件上传 API | 未实现（仅本地选择） |
 | GIF 预览 | 未实现（已改用 MP4 clip） |
 
-运维侧仍建议在目标机实测 FFmpeg 耗时与 `MAX_CACHE_SIZE` 容量规划。
+运维侧仍建议在目标机实测 FFmpeg 耗时、关键帧批量采集时长与 `MAX_CACHE_SIZE` 容量规划。
 
 ---
 
-*文档版本: 1.2*  
+*文档版本: 1.3*  
 *创建日期: 2026-06-01*  
 *更新日期: 2026-06-18*

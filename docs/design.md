@@ -1,6 +1,6 @@
 # 电影帧浏览 Web 应用 - 产品设计文档
 
-> 版本：v1.2  
+> 版本：v1.3  
 > 日期：2026-06-18  
 > 状态：已与实现对齐（backend/ + frontend/ 分目录）
 
@@ -13,17 +13,18 @@
 #### 用户路径
 
 ```
-[选择本地电影] → [入库处理] → [封面展示] → [时间轴浏览] → [片段预览/续播] → [媒体库查看缓存]
+[选择本地电影] → [入库处理] → [封面展示] → [时间轴浏览] → [关键帧采集(可选)] → [片段预览/续播] → [媒体库查看缓存]
 ```
 
 具体步骤：
 
-1. **选择电影**：首页点击「选择电影」，弹出服务器 `LOCAL_MOVIES_DIR` 目录下的视频列表
+1. **选择电影**：首页点击「选择电影」，通过分层目录浏览器浏览 `LOCAL_MOVIES_DIR` 下的子目录与视频文件
 2. **入库处理**：选择后后端提取封面、写入帧索引元数据（帧图不预抽，按需生成）
-3. **浏览**：进入 `Browse` 页，拖动时间轴，后端按需返回对应时间戳的帧图
-4. **片段预览**：点击「预览」或帧图，内联播放 MP4 片段（关键帧对齐，默认前 1 秒、后 5 秒）
-5. **续播**：片段播放结束后可继续下一段（`CLIP_CONTINUE_OFFSET` 控制偏移）
-6. **媒体库**：`Gallery` 页查看已缓存的帧图与片段网格
+3. **浏览**：进入 `Browse` 页，拖动时间轴查看对应帧图；滑动或方向键按相邻关键帧步进
+4. **关键帧采集（可选）**：点击 🎞️ 按钮后台批量提取全片关键帧，完成后可打开「浏览关键帧」瀑布流视图
+5. **片段预览**：点击「预览」，内联播放 MP4 片段（关键帧对齐，默认前 1 秒、后 5 秒）
+6. **续播**：片段播放结束后可继续下一段（`CLIP_CONTINUE_OFFSET` 控制偏移）
+7. **媒体库**：`Gallery` 页查看已缓存的帧图与片段网格（关键帧带标记）
 
 #### 页面结构
 
@@ -45,17 +46,32 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│  ← 电影名称  01:23:45        [信息] [删除]   │
+│  ← 电影名称  01:23:45   [浏览关键帧] [🎞️]   │
 ├─────────────────────────────────────────────┤
 │         主展示区 (FrameDisplay)              │
 │    帧图 / 内联 MP4 片段预览                  │
+│    （左右滑动 / 方向键 → 相邻关键帧步进）     │
 ├─────────────────────────────────────────────┤
-│  [-10s][-5s][-3s][预览][+3s][+5s][+10s]      │
+│  [-60s][-30s][-10s][预览][+10s][+30s][+60s]  │
 ├─────────────────────────────────────────────┤
 │  时间轴 (Timeline)                           │
 │  [======●========================]           │
 ├─────────────────────────────────────────────┤
-│  操作栏: [封面] [媒体库] [信息]             │
+│  操作栏: [媒体库] [封面] [信息] [删除]       │
+└─────────────────────────────────────────────┘
+```
+
+**关键帧浏览（KeyframeBrowser，底部抽屉）**
+
+```
+┌─────────────────────────────────────────────┐
+│  浏览关键帧                    128 帧    ✕   │
+├─────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐    │
+│  │  关键帧图 (瀑布流，IntersectionObserver) │    │
+│  ├─────────────────────────────────────┤    │
+│  │  关键帧图                            │    │
+│  └─────────────────────────────────────┘    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -78,15 +94,25 @@
 帧提取为 I/O 密集型操作，采用以下策略：
 
 1. **按需提取**：滑动到新时间点时异步请求帧图
-2. **帧预加载**：滑动停止后预加载相邻帧
-3. **占位图**：加载期间显示灰色占位 + 动画
-4. **质量自适应**：默认 JPEG 宽度 1280px，质量 75%
+2. **关键帧步进**：左右滑动或方向键调用 `GET /keyframe` 跳到相邻关键帧
+3. **帧预加载**：滑动停止后预加载相邻帧
+4. **占位图**：加载期间显示灰色占位 + 动画
+5. **质量自适应**：默认 JPEG 宽度 1280px，质量 75%
+
+#### 关键帧采集与浏览
+
+| 操作 | 行为 |
+|------|------|
+| 点击 🎞️ | 触发 `POST /keyframes/extract`，后台批量采集全片关键帧 |
+| 点击「浏览关键帧」 | 打开 `KeyframeBrowser` 瀑布流（需先完成采集） |
+| 点击瀑布流中的帧 | 跳转到对应时间戳并关闭抽屉 |
+| 媒体库 | 已缓存关键帧显示「关键帧」标记 |
 
 ---
 
 ### 1.3 片段预览交互
 
-- **触发方式**：浏览页工具栏「预览」按钮，或点击帧图进入片段模式
+- **触发方式**：浏览页工具栏「预览」按钮
 - **动画范围**：`CLIP_SEEK_BACK`（默认 1s）+ `CLIP_SEEK_FORWARD`（默认 5s），对齐关键帧
 - **格式**：H.264 MP4（`GET /api/movies/:id/clip?t=`）
 - **加载状态**：轮询 `GET /api/tasks/:taskId`，生成中显示进度
@@ -111,7 +137,11 @@
 | GET | `/api/movies/:id/frames/:timestamp` | 获取指定时间戳帧图 | 同步（按需生成，302） |
 | GET | `/api/movies/:id/clip` | 生成/获取 MP4 预览片段 | 同步或异步 |
 | GET | `/api/movies/:id/clips` | 列出已缓存片段 | 同步 |
-| GET | `/api/movies/local/list` | 列出本地目录可导入视频 | 同步 |
+| GET | `/api/movies/:id/keyframe` | 查找相邻关键帧 | 同步 |
+| GET | `/api/movies/:id/keyframes` | 列出已采集关键帧时间戳 | 同步 |
+| POST | `/api/movies/:id/keyframes/extract` | 批量采集全片关键帧 | 异步 |
+| GET | `/api/movies/local/browse` | 分层浏览本地目录 | 同步 |
+| GET | `/api/movies/local/list` | 列出本地根目录可导入视频 | 同步 |
 | POST | `/api/movies/local/select` | 登记本地路径为电影 | 异步 |
 | GET | `/api/movies/cache/status` | 缓存占用统计 | 同步 |
 | DELETE | `/api/movies/cache` | 清理缓存（可选 `movieId`） | 同步 |
@@ -235,7 +265,112 @@ Location: /movie/static/frames/mv_001/120.jpg
       "url": "/movie/static/frames/mv_001/120.jpg",
       "apiUrl": "/api/movies/mv_001/frames/120",
       "size": 51200,
-      "createdAt": "2026-06-18T10:00:00Z"
+      "createdAt": "2026-06-18T10:00:00Z",
+      "isKeyframe": true
+    }
+  ]
+}
+```
+
+---
+
+#### GET `/api/movies/:id/keyframe`
+
+查找当前位置相邻的关键帧，用于滑动/方向键步进。
+
+**查询参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| t | number | 当前时间戳（秒） |
+| dir | string | `next` 或 `prev` |
+
+**响应 - 200 OK**
+
+```json
+{
+  "timestamp": 125.5
+}
+```
+
+---
+
+#### GET `/api/movies/:id/keyframes`
+
+列出已批量采集的关键帧时间戳（需先执行 `keyframes/extract`）。
+
+**响应 - 200 OK**
+
+```json
+{
+  "movieId": "mv_001",
+  "extracted": true,
+  "total": 128,
+  "keyframes": [
+    { "timestamp": 0, "url": "/api/movies/mv_001/frames/0" },
+    { "timestamp": 2.5, "url": "/api/movies/mv_001/frames/2.5" }
+  ]
+}
+```
+
+---
+
+#### POST `/api/movies/:id/keyframes/extract`
+
+批量采集全片关键帧（后台任务）。已采集时返回 409。
+
+**响应 - 202 Accepted**
+
+```json
+{
+  "taskId": "task_kf_abc",
+  "status": "queued",
+  "message": "关键帧采集任务已加入队列"
+}
+```
+
+**响应 - 409 Conflict**（已采集）
+
+```json
+{
+  "error": "ALREADY_EXTRACTED",
+  "message": "该视频的关键帧已全部采集完成",
+  "keyframesCount": 128,
+  "keyframesExtractedAt": "2026-06-18T12:00:00Z",
+  "code": 409
+}
+```
+
+---
+
+#### GET `/api/movies/local/browse`
+
+分层浏览本地电影目录（每次返回一层）。
+
+**查询参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| path | string | 子目录绝对路径（省略则返回根目录） |
+
+**响应 - 200 OK**
+
+```json
+{
+  "root": "/mnt/movies",
+  "path": "/mnt/movies/2024",
+  "name": "2024",
+  "parent": "/mnt/movies",
+  "entries": [
+    { "name": "subdir", "path": "/mnt/movies/2024/subdir", "type": "directory" },
+    {
+      "name": "film.mkv",
+      "path": "/mnt/movies/2024/film.mkv",
+      "type": "file",
+      "extension": "mkv",
+      "size": 8589934592,
+      "sizeFormatted": "8.0 GB",
+      "modifiedAt": "2026-06-01T08:00:00Z"
     }
   ]
 }
@@ -329,6 +464,7 @@ X-Clip-End: 125.0
 |------|------|
 | `movie_process` | 入库：封面 + 帧索引 |
 | `clip_generate` | 片段生成 |
+| `keyframe_extract` | 全片关键帧批量采集 |
 | `frame_extract` | 按需帧提取（内部） |
 
 **status 枚举**
@@ -361,7 +497,11 @@ X-Clip-End: 125.0
 | `UNSUPPORTED_FORMAT` | 400 | 不支持的文件格式 |
 | `INVALID_TIMESTAMP` | 400 | 无效的时间戳 |
 | `MISSING_TIMESTAMP` | 400 | 缺少 `t` 参数 |
+| `MISSING_PARAMS` | 400 | 缺少 `t` 或 `dir` 参数 |
+| `INVALID_DIRECTION` | 400 | `dir` 必须为 next 或 prev |
 | `INVALID_PATH` | 400 | 路径不在允许目录内 |
+| `NOT_A_DIRECTORY` | 400 | 目标路径不是目录 |
+| `ALREADY_EXTRACTED` | 409 | 关键帧已全部采集 |
 | `MOVIE_NOT_FOUND` | 404 | 电影不存在 |
 | `COVER_NOT_READY` | 404 | 封面未生成 |
 | `FRAME_NOT_FOUND` | 404 | 帧提取失败 |
@@ -399,7 +539,10 @@ X-Clip-End: 125.0
       "status": "ready",
       "coverFile": "mv_xxx.jpg",
       "frameInterval": 5,
-      "totalFrames": 2036
+      "totalFrames": 2036,
+      "keyframesExtracted": true,
+      "keyframesCount": 128,
+      "keyframesExtractedAt": "2026-06-18T12:00:00Z"
     }
   ]
 }
@@ -436,11 +579,13 @@ STORAGE_PATH/
 │   └── {movieId}.jpg
 ├── frames/
 │   └── {movieId}/
-│       └── {timestamp}.jpg    # 按需生成
+│       ├── keyframes.json       # 关键帧时间戳清单
+│       ├── {timestamp}.jpg      # 按需或批量生成
+│       └── {timestamp}.json     # 帧元数据（isKeyframe 等，可选）
 ├── clips/
 │   └── {movieId}/
 │       ├── t{timestamp}.mp4
-│       └── t{timestamp}.json  # 片段元数据（起止时间）
+│       └── t{timestamp}.json    # 片段元数据（起止时间）
 └── temp/
     └── {taskId}/
 ```
@@ -487,7 +632,7 @@ movie-frame-browser/
     ├── vite.config.js            # base: /movie/
     └── src/
         ├── views/                # Home, Browse, Gallery, MovieDetail
-        ├── components/           # Timeline, FrameDisplay, ClipPreview, ...
+        ├── components/           # Timeline, FrameDisplay, KeyframeBrowser, ClipPreview, ...
         ├── composables/          # useMovieApi, useFrameLoader, useClipLoader
         ├── stores/movieStore.js
         └── router/index.js
@@ -497,12 +642,12 @@ movie-frame-browser/
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `ffmpegService` | 封面、抽帧、片段、关键帧探测 | `extractCover()`, `extractFrame()`, `generatePreviewClip()`, `computePreviewSegment()` |
+| `ffmpegService` | 封面、抽帧、片段、关键帧探测与批量采集 | `extractCover()`, `extractFrame()`, `generatePreviewClip()`, `findAdjacentKeyframe()`, `extractAllKeyframesBatch()` |
 | `cacheService` | movies.json / tasks.json | `getMovies()`, `saveMovie()`, `getTask()`, `updateTask()` |
-| `storageService` | 路径与文件 CRUD、缓存统计 | `getCoverPath()`, `getFramePath()`, `getClipPath()`, `deleteMovieCache()` |
+| `storageService` | 路径与文件 CRUD、缓存统计、关键帧清单 | `getCoverPath()`, `getFramePath()`, `getClipPath()`, `saveKeyframesManifest()`, `deleteMovieCache()` |
 | `movieProcessService` | 本地选择后的入库流水线 | `processMovieIngest()` |
 | `taskQueue` | FFmpeg 并发与 CPU 阈值 | `enqueue()`, `PRIORITY` |
-| `movieController` | REST 入口 | 本地选择、帧/clip、缓存 API |
+| `movieController` | REST 入口 | 本地浏览/选择、帧/clip/关键帧、缓存 API |
 | `taskController` | 任务查询与取消 | `getTaskStatus()`, `getQueueStatus()` |
 
 ### 4.3 依赖包
@@ -558,7 +703,7 @@ movie-frame-browser/
 
 1. **信号量**：`MAX_CONCURRENT_FFMPEG`（默认 `cpuCores / 2`）
 2. **CPU 负载检测**：`cpuLoadMonitor` 每 5 秒检测，负载 > 阈值时暂停入队
-3. **任务优先级**：`clip_generate` > 帧提取 > 封面提取
+3. **任务优先级**：`clip_generate` > 帧提取 / 关键帧采集 > 封面提取
 4. **单进程限制**：`FFMPEG_THREADS=1`
 
 ### 5.2 缓存策略
@@ -567,6 +712,8 @@ movie-frame-browser/
 |----------|----------|----------|
 | 封面 | 永久 | 删除电影时 |
 | 帧图（按需） | 永久 | 删除电影时 / LRU 全局清理 |
+| 帧图（关键帧批量） | 永久 | 删除电影时 / LRU 全局清理 |
+| 关键帧清单 | 永久 | 删除电影时 |
 | 片段 | 永久 | 删除电影时 / LRU 全局清理 |
 | 临时文件 | 启动清理 | 每次启动 |
 
@@ -593,6 +740,9 @@ ffmpeg -ss 120 -i input.mkv -vframes 1 -q:v 2 -vf "scale=1280:-1" frame.jpg
 
 # 生成预览片段（关键帧对齐后截取）
 ffmpeg -ss 118.5 -to 125.0 -i input.mkv -c:v libx264 -preset fast clip.mp4
+
+# 批量提取关键帧（-skip_frame nokey）
+ffmpeg -skip_frame nokey -i input.mkv -vsync 0 -vf "scale=1280:-1" -q:v 5 output_%06d.jpg
 ```
 
 ### 6.2 部署要点

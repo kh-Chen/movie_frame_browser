@@ -13,11 +13,12 @@
 
 ## 功能概览
 
-- 从 `LOCAL_MOVIES_DIR` 扫描并登记本地视频（MP4、MKV、AVI、MOV、WMV）
+- 从 `LOCAL_MOVIES_DIR` 分层浏览并登记本地视频（MP4、MKV、AVI、MOV、WMV）
 - 入库处理：提取封面 + 生成自适应帧索引（帧图按需提取，不批量预抽）
-- 浏览页：时间轴拖动、帧图展示、内联 MP4 片段预览与续播
-- 媒体库页：查看已缓存的帧图与片段
-- 任务队列面板：查看后台 FFmpeg 任务进度
+- 浏览页：时间轴拖动、帧图展示、按相邻关键帧步进（滑动/方向键）、内联 MP4 片段预览与续播
+- 关键帧采集：可选后台批量提取全片关键帧，支持瀑布流浏览全部关键帧
+- 媒体库页：查看已缓存的帧图与片段（关键帧带标记）
+- 任务队列面板：查看后台 FFmpeg 任务进度（含关键帧采集）
 - 缓存管理：按电影或全局清理 frames/clips
 - 静态资源由后端挂载，支持 `PUBLIC_PATH` 子路径部署
 
@@ -97,7 +98,11 @@ cd backend && npm start
 | GET | `/api/movies/:id/frames/:ts` | 单帧（按需生成，302 静态文件） |
 | GET | `/api/movies/:id/clip?t=` | 预览片段（缓存命中直接返回 MP4，否则 202 + 轮询任务） |
 | GET | `/api/movies/:id/clips` | 已缓存片段列表 |
-| GET | `/api/movies/local/list` | 本地目录可导入视频列表 |
+| GET | `/api/movies/:id/keyframe?t=&dir=` | 查找相邻关键帧（`dir=next` / `prev`） |
+| GET | `/api/movies/:id/keyframes` | 已采集关键帧时间戳列表 |
+| POST | `/api/movies/:id/keyframes/extract` | 批量采集全片关键帧（202 异步任务） |
+| GET | `/api/movies/local/browse` | 分层浏览本地目录（可选 `?path=`） |
+| GET | `/api/movies/local/list` | 本地根目录可导入视频列表（扁平） |
 | POST | `/api/movies/local/select` | 登记本地文件 |
 | GET | `/api/movies/cache/status` | 缓存占用统计 |
 | DELETE | `/api/movies/cache` | 清理缓存（可选 `?movieId=`） |

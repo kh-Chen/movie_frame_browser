@@ -387,7 +387,7 @@ async function listCachedFrames(movieId) {
 async function listCachedClips(movieId) {
   const dir = path.join(config.paths.clips, movieId);
   const clips = [];
-  const clipPattern = /^t([\d.]+)(?:_w[\d.]+)?\.mp4$/;
+  const clipPattern = /^t([\d.]+)\.mp4$/;
 
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -414,6 +414,40 @@ async function listCachedClips(movieId) {
 
   clips.sort((a, b) => a.timestamp - b.timestamp);
   return clips;
+}
+
+/**
+ * Find a cached clip whose segment covers the requested timestamp.
+ * When multiple clips cover the point, prefer the one whose center is closest.
+ * @param {string} movieId
+ * @param {number} requestedTime - Timestamp in seconds
+ * @returns {Promise<{timestamp: number, clipPath: string, meta: object}|null>}
+ */
+async function findCoveringClip(movieId, requestedTime) {
+  const clips = await listCachedClips(movieId);
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const clip of clips) {
+    const meta = await readClipMeta(movieId, clip.timestamp);
+    if (!meta || meta.startTime == null || meta.endTime == null) continue;
+
+    if (requestedTime < meta.startTime - 0.001 || requestedTime > meta.endTime + 0.001) {
+      continue;
+    }
+
+    const distance = Math.abs(clip.timestamp - requestedTime);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = {
+        timestamp: clip.timestamp,
+        clipPath: getClipPath(movieId, clip.timestamp),
+        meta,
+      };
+    }
+  }
+
+  return best;
 }
 
 /**
@@ -467,4 +501,5 @@ module.exports = {
   getFileStats,
   listCachedFrames,
   listCachedClips,
+  findCoveringClip,
 };

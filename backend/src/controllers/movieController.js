@@ -24,25 +24,6 @@ function setClipMetaHeaders(res, meta) {
   res.set('X-Clip-End', String(meta.endTime));
 }
 
-async function ensureClipMeta(movie, timestamp, clipPath) {
-  let meta = await storageService.readClipMeta(movie.id, timestamp);
-  if (meta) return meta;
-
-  const segment = await ffmpegService.computePreviewSegment(
-    movie.originalPath,
-    timestamp,
-    movie.duration
-  );
-  meta = await ffmpegService.resolveClipSegment(
-    movie.originalPath,
-    clipPath,
-    segment,
-    movie.duration
-  );
-  await storageService.saveClipMeta(movie.id, timestamp, meta);
-  return meta;
-}
-
 /**
  * Get all movies
  */
@@ -319,10 +300,17 @@ async function getClip(req, res, next) {
     const exists = await storageService.fileExists(clipPath);
 
     if (exists) {
-      const meta = await ensureClipMeta(movie, timestamp, clipPath);
+      const meta = await storageService.readClipMeta(id, timestamp);
       setClipMetaHeaders(res, meta);
       res.type('mp4');
       return res.sendFile(clipPath);
+    }
+
+    const covering = await storageService.findCoveringClip(id, timestamp);
+    if (covering) {
+      setClipMetaHeaders(res, covering.meta);
+      res.type('mp4');
+      return res.sendFile(covering.clipPath);
     }
 
     const existingTasks = await cacheService.getTasksByMovie(id);
@@ -426,9 +414,9 @@ async function listCachedClips(req, res, next) {
     }
 
     const cached = await storageService.listCachedClips(id);
-    const clips = await Promise.all(cached.map(async (clip) => {
-      const clipPath = storageService.getClipPath(id, clip.timestamp);
-      const meta = await ensureClipMeta(movie, clip.timestamp, clipPath);
+    const clips = (await Promise.all(cached.map(async (clip) => {
+      const meta = await storageService.readClipMeta(id, clip.timestamp);
+      if (!meta) return null;
 
       return {
         timestamp: clip.timestamp,
@@ -440,7 +428,7 @@ async function listCachedClips(req, res, next) {
         size: clip.size,
         createdAt: clip.createdAt,
       };
-    }));
+    }))).filter(Boolean);
 
     res.json({
       movieId: id,

@@ -59,7 +59,7 @@ export function useFrameLoader() {
     loadingFrames.value.add(timestamp)
     
     try {
-      const timestampSec = Math.floor(timestamp)
+      const timestampSec = Math.round(timestamp * 1000) / 1000
       const url = `${API_BASE}/movies/${movieId}/frames/${timestampSec}?width=${width}`
       
       const img = new Image()

@@ -190,7 +190,7 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const store = useMovieStore()
-const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl } = useMovieApi()
+const { getMovie, deleteMovie: apiDeleteMovie, getFrameUrl, getKeyframe } = useMovieApi()
 const { preloadFrames, isLoading: isFrameLoading } = useFrameLoader()
 
 // State
@@ -221,13 +221,12 @@ const isDeleting = ref(false)
 // Preload state
 let preloadTimer = null
 
-const FRAME_STEP_SEC = 1
 const PRELOAD_RANGE_SEC = 1
 
 // Computed
 const currentFrameUrl = computed(() => {
   if (!movie.value || currentTimestamp.value === null) return null
-  return getFrameUrl(movieId.value, Math.floor(currentTimestamp.value))
+  return getFrameUrl(movieId.value, currentTimestamp.value)
 })
 
 const progressText = computed(() => {
@@ -265,7 +264,7 @@ const loadMovie = async () => {
   }
 }
 
-// Step by one second (design: frame preview advances 1s per step)
+// Step by adjacent keyframe (swipe / arrow keys)
 const stopClipPreview = () => {
   if (!isClipMode.value) return
   isClipMode.value = false
@@ -284,8 +283,18 @@ const seekBy = (deltaSec) => {
   schedulePreload(next)
 }
 
-const stepFrame = (direction) => {
-  seekBy(direction * FRAME_STEP_SEC)
+const stepFrame = async (direction) => {
+  if (!movie.value) return
+  stopClipPreview()
+  try {
+    const data = await getKeyframe(movieId.value, currentTimestamp.value, direction)
+    const next = data.timestamp
+    if (next === currentTimestamp.value) return
+    currentTimestamp.value = next
+    schedulePreload(next)
+  } catch (error) {
+    console.error('Keyframe step failed:', error)
+  }
 }
 
 // Handle seek

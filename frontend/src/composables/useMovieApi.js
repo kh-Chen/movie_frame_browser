@@ -33,7 +33,14 @@ export const useMovieApi = () => {
    * 获取帧图片URL
    */
   const getFrameUrl = (id, timestamp, width = 1280) => {
-    return `${API_BASE}/movies/${id}/frames/${timestamp}?width=${width}`
+    const t = Math.round(timestamp * 1000) / 1000
+    return `${API_BASE}/movies/${id}/frames/${t}?width=${width}`
+  }
+
+  const getKeyframe = async (id, timestamp, direction) => {
+    const t = Math.round(timestamp * 1000) / 1000
+    const dir = direction > 0 ? 'next' : 'prev'
+    return api.get(`/movies/${id}/keyframe`, { params: { t, dir } })
   }
 
   const getClipUrl = (id, timestamp) => {
@@ -111,6 +118,7 @@ export const useMovieApi = () => {
     deleteMovie,
     getCoverUrl,
     getFrameUrl,
+    getKeyframe,
     getClipUrl,
     getTaskStatus,
     browseLocalDirectory,

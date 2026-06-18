@@ -20,6 +20,7 @@ router.get('/:id/cover', movieController.getMovieCover);
 router.get('/:id/frames/cached', movieController.listCachedFrames);
 router.get('/:id/frames', movieController.getFrameIndex);
 router.get('/:id/frames/:timestamp', movieController.getFrame);
+router.get('/:id/keyframe', movieController.getKeyframe);
 router.get('/:id/clips', movieController.listCachedClips);
 router.get('/:id/clip', movieController.getClip);
 router.get('/:id', movieController.getMovie);

@@ -216,8 +216,8 @@ async function getFrame(req, res, next) {
       });
     }
     
-    const ts = parseInt(timestamp);
-    
+    const ts = Math.round(parseFloat(timestamp) * 1000) / 1000;
+
     if (isNaN(ts) || ts < 0 || ts > movie.duration) {
       return res.status(400).json({
         error: 'INVALID_TIMESTAMP',
@@ -257,6 +257,62 @@ async function getFrame(req, res, next) {
         code: 404,
       });
     }
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Find adjacent keyframe for frame stepping
+ */
+async function getKeyframe(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { t, dir } = req.query;
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    if (!t || !dir) {
+      return res.status(400).json({
+        error: 'MISSING_PARAMS',
+        message: '缺少参数 t 或 dir',
+        code: 400,
+      });
+    }
+
+    const timestamp = Math.round(parseFloat(t) * 1000) / 1000;
+    if (isNaN(timestamp) || timestamp < 0 || timestamp > movie.duration) {
+      return res.status(400).json({
+        error: 'INVALID_TIMESTAMP',
+        message: '无效的时间戳',
+        code: 400,
+      });
+    }
+
+    const direction = dir === 'next' ? 'next' : dir === 'prev' ? 'prev' : null;
+    if (!direction) {
+      return res.status(400).json({
+        error: 'INVALID_DIRECTION',
+        message: 'dir 必须为 next 或 prev',
+        code: 400,
+      });
+    }
+
+    const keyframeTime = await ffmpegService.findAdjacentKeyframe(
+      movie.originalPath,
+      timestamp,
+      direction,
+      movie.duration
+    );
+
+    res.json({ timestamp: keyframeTime });
   } catch (error) {
     next(error);
   }
@@ -805,6 +861,7 @@ module.exports = {
   getMovieCover,
   getFrameIndex,
   getFrame,
+  getKeyframe,
   getClip,
   listCachedFrames,
   listCachedClips,

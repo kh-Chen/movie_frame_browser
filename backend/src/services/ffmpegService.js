@@ -73,31 +73,41 @@ async function computePreviewSegment(videoPath, timestamp, videoDuration = null)
   };
 }
 
+/** Probe keyframe timestamps within [startSec, endSec] (seconds from file start). */
+async function probeKeyframeTimes(videoPath, startSec, endSec) {
+  const start = roundSeekTime(Math.max(0, startSec));
+  const end = roundSeekTime(Math.max(start, endSec));
+  const duration = Math.max(0.001, roundSeekTime(end - start));
+  const interval = `${start}%+${duration}`;
+
+  const { stdout } = await execFileAsync(FFPROBE_PATH, [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-skip_frame', 'nokey',
+    '-show_entries', 'frame=best_effort_timestamp_time',
+    '-of', 'csv=p=0',
+    '-read_intervals', interval,
+    videoPath,
+  ], { maxBuffer: 1024 * 1024 });
+
+  return stdout.trim().split('\n')
+    .map((line) => parseFloat(line))
+    .filter((n) => !Number.isNaN(n));
+}
+
 /** Nearest keyframe at or before timestamp. */
 async function findKeyframeBefore(videoPath, timestamp) {
   const t = roundSeekTime(timestamp);
   const searchStart = Math.max(0, t - 60);
-  const interval = `${searchStart}%@${t}`;
 
   try {
-    const { stdout } = await execFileAsync(FFPROBE_PATH, [
-      '-v', 'error',
-      '-select_streams', 'v:0',
-      '-skip_frame', 'nokey',
-      '-show_entries', 'frame=best_effort_timestamp_time',
-      '-of', 'csv=p=0',
-      '-read_intervals', interval,
-      videoPath,
-    ], { maxBuffer: 1024 * 1024 });
+    const times = await probeKeyframeTimes(videoPath, searchStart, t);
+    const valid = times.filter((n) => n <= t + 0.001);
 
-    const times = stdout.trim().split('\n')
-      .map((line) => parseFloat(line))
-      .filter((n) => !Number.isNaN(n) && n <= t + 0.001);
-
-    if (times.length === 0) {
+    if (valid.length === 0) {
       return Math.max(0, t);
     }
-    return roundSeekTime(Math.max(...times));
+    return roundSeekTime(Math.max(...valid));
   } catch (error) {
     logger.warn('Keyframe probe failed, using requested start', { error: error.message });
     return Math.max(0, t);
@@ -109,30 +119,71 @@ async function findKeyframeAfter(videoPath, timestamp, videoDuration = null) {
   const t = roundSeekTime(timestamp);
   const searchEnd = videoDuration != null
     ? roundSeekTime(Math.min(videoDuration, t + 60))
-    : t + 60;
-  const interval = `${t}%@${searchEnd}`;
+    : roundSeekTime(t + 60);
 
   try {
-    const { stdout } = await execFileAsync(FFPROBE_PATH, [
-      '-v', 'error',
-      '-select_streams', 'v:0',
-      '-skip_frame', 'nokey',
-      '-show_entries', 'frame=best_effort_timestamp_time',
-      '-of', 'csv=p=0',
-      '-read_intervals', interval,
-      videoPath,
-    ], { maxBuffer: 1024 * 1024 });
+    const times = await probeKeyframeTimes(videoPath, t, searchEnd);
+    const valid = times.filter((n) => n >= t - 0.001);
 
-    const times = stdout.trim().split('\n')
-      .map((line) => parseFloat(line))
-      .filter((n) => !Number.isNaN(n) && n >= t - 0.001);
-
-    if (times.length === 0) {
+    if (valid.length === 0) {
       return t;
     }
-    return roundSeekTime(Math.min(...times));
+    return roundSeekTime(Math.min(...valid));
   } catch (error) {
     logger.warn('Keyframe probe (after) failed, using requested end', { error: error.message });
+    return t;
+  }
+}
+
+const KEYFRAME_STEP_EPS = 0.001;
+
+/** Next or previous keyframe relative to current position. */
+async function findAdjacentKeyframe(videoPath, timestamp, direction, videoDuration = null) {
+  const t = roundSeekTime(timestamp);
+
+  if (direction === 'next' || direction === 1) {
+    const searchEnd = videoDuration != null
+      ? roundSeekTime(Math.min(videoDuration, t + 60))
+      : roundSeekTime(t + 60);
+
+    try {
+      const times = await probeKeyframeTimes(videoPath, t, searchEnd);
+      const valid = times.filter((n) => n > t + KEYFRAME_STEP_EPS);
+
+      if (valid.length > 0) {
+        let next = roundSeekTime(Math.min(...valid));
+        if (videoDuration != null && next > videoDuration) {
+          next = roundSeekTime(videoDuration);
+        }
+        return next;
+      }
+
+      if (videoDuration != null && t >= videoDuration - KEYFRAME_STEP_EPS) {
+        return roundSeekTime(videoDuration);
+      }
+      return t;
+    } catch (error) {
+      logger.warn('Keyframe step (next) failed', { error: error.message });
+      return t;
+    }
+  }
+
+  const searchStart = Math.max(0, t - 60);
+
+  try {
+    const times = await probeKeyframeTimes(videoPath, searchStart, t);
+    const valid = times.filter((n) => n < t - KEYFRAME_STEP_EPS);
+
+    if (valid.length > 0) {
+      return roundSeekTime(Math.max(...valid));
+    }
+
+    if (t <= KEYFRAME_STEP_EPS) {
+      return 0;
+    }
+    return t;
+  } catch (error) {
+    logger.warn('Keyframe step (prev) failed', { error: error.message });
     return t;
   }
 }
@@ -450,6 +501,7 @@ module.exports = {
   extractCover,
   extractFrame,
   computePreviewSegment,
+  findAdjacentKeyframe,
   resolveClipSegment,
   generatePreviewClip,
   extractFrameBatch,

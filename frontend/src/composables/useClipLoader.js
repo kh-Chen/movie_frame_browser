@@ -11,7 +11,7 @@ export function useClipLoader(movieId) {
 
   const isLoading = ref(false)
   const loadingProgress = ref(0)
-  const loadingText = ref('正在截取片段...')
+  const loadingText = ref('正在加载片段...')
   const clipUrl = ref(null)
   const hasError = ref(false)
   const fallbackFrames = ref([])
@@ -148,6 +148,7 @@ export function useClipLoader(movieId) {
       resolvedUrl = URL.createObjectURL(await response.blob())
     } else if (response.status === 202) {
       const data = await response.json()
+      loadingText.value = data.message || '正在截取片段...'
       resolvedUrl = await pollClipTask(data.taskId, url)
       try {
         const metaResponse = await fetch(`${url}&cache=${Date.now()}`, { method: 'HEAD' })
@@ -176,7 +177,7 @@ export function useClipLoader(movieId) {
     revokeClipUrl()
     isLoading.value = false
     loadingProgress.value = 0
-    loadingText.value = '正在截取片段...'
+    loadingText.value = '正在加载片段...'
     hasError.value = false
     fallbackFrames.value = []
     segmentStart.value = null
@@ -197,7 +198,7 @@ export function useClipLoader(movieId) {
     isLoading.value = true
     hasError.value = false
     loadingProgress.value = 0
-    loadingText.value = '正在截取片段...'
+    loadingText.value = '正在加载片段...'
     segmentStart.value = null
     segmentEnd.value = null
     activeTimestamp.value = timestamp

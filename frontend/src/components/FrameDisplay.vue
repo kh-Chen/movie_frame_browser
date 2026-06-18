@@ -140,7 +140,7 @@ const props = defineProps({
   },
   clipLoadingText: {
     type: String,
-    default: '正在截取片段...'
+    default: '正在加载片段...'
   },
   clipLoadingProgress: {
     type: Number,

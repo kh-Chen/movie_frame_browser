@@ -438,16 +438,8 @@ function parseTimemark(timemark) {
 }
 
 /**
- * Extract all keyframes in a single ffmpeg pass, then rename to timestamp-based files.
- * @param {string} videoPath
- * @param {string} outputDir - Final frame directory (frames/{movieId})
- * @param {object} options
- * @param {string} options.tempDir - Scratch directory for sequential output
- * @param {number} options.duration - Video duration (seconds)
- * @param {number} options.width
- * @param {number} options.quality
- * @param {Function} progressCallback - (percent, message) => void
- * @returns {Promise<{timestamps: number[], total: number}>}
+ * Extract all keyframes in a single ffmpeg pass, then rename to frame-index key files.
+ * @returns {Promise<{frameIndices: number[], total: number}>}
  */
 async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, progressCallback = null) {
   const {
@@ -539,7 +531,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
       throw new Error('关键帧提取未产出任何文件');
     }
 
-    const savedTimestamps = [];
+    const savedFrameIndices = [];
     const seenFrameKeys = new Set();
 
     for (let i = 0; i < count; i++) {
@@ -557,7 +549,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
 
       if (!seenFrameKeys.has(basename)) {
         seenFrameKeys.add(basename);
-        savedTimestamps.push(quantizeToFrame(timestamps[i], fps, videoDuration));
+        savedFrameIndices.push(frameIndex);
       }
 
       if (progressCallback) {
@@ -568,10 +560,10 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
 
     logger.info('Keyframe batch extraction completed', {
       probed: timestamps.length,
-      saved: savedTimestamps.length,
+      saved: savedFrameIndices.length,
     });
 
-    return { timestamps: savedTimestamps, total: savedTimestamps.length };
+    return { frameIndices: savedFrameIndices, total: savedFrameIndices.length };
   } finally {
     await fs.rm(scratchDir, { recursive: true, force: true });
   }

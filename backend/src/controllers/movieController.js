@@ -16,6 +16,7 @@ const {
   DEFAULT_FPS,
   formatFrameTimestamp,
   formatFrameBasename,
+  frameIndexToTimestamp,
   getFrameIndex: toFrameIndex,
   quantizeToFrame,
 } = require('../utils/frameTimestamp');
@@ -486,12 +487,13 @@ async function listKeyframes(req, res, next) {
 
     const manifest = await storageService.readKeyframesManifest(id);
     const fps = movie.fps || DEFAULT_FPS;
-    const timestamps = manifest?.timestamps || [];
-    const keyframes = timestamps.map((timestamp) => {
-      const ts = quantizeToFrame(timestamp, fps, movie.duration);
+    const frameIndices = manifest?.frameIndices || [];
+    const keyframes = frameIndices.map((frameIndex) => {
+      const timestamp = frameIndexToTimestamp(frameIndex, fps);
       return {
+        frameIndex,
         timestamp,
-        url: `/api/movies/${id}/frames/${formatFrameTimestamp(ts)}`,
+        url: `/api/movies/${id}/frames/${formatFrameTimestamp(timestamp)}`,
       };
     });
 
@@ -559,7 +561,7 @@ async function extractAllKeyframes(req, res, next) {
         const frameDir = path.join(config.paths.frames, taskMovieId);
         const tempDir = path.join(config.paths.temp, `keyframe-${taskMovieId}`);
 
-        const { timestamps, total } = await ffmpegService.extractAllKeyframesBatch(
+        const { frameIndices, total } = await ffmpegService.extractAllKeyframesBatch(
           params.moviePath,
           frameDir,
           {
@@ -571,7 +573,7 @@ async function extractAllKeyframes(req, res, next) {
         );
 
         await storageService.saveKeyframesManifest(taskMovieId, {
-          timestamps,
+          frameIndices,
           extractedAt: new Date().toISOString(),
         });
 

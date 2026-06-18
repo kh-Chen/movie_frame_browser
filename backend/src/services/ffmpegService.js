@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 const config = require('../config');
 const logger = require('../utils/logger');
 const { formatTime } = require('../utils/timeFormatter');
-const { DEFAULT_FPS, formatFrameBasename, getFrameIndex, quantizeToFrame } = require('../utils/frameTimestamp');
+const { DEFAULT_FPS, formatFrameBasename, formatKeyframeFilename, getFrameIndex, quantizeToFrame } = require('../utils/frameTimestamp');
 
 /**
  * Get FFmpeg binary path (uses system ffmpeg by default)
@@ -545,7 +545,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
     for (let i = 0; i < count; i++) {
       const frameIndex = getFrameIndex(timestamps[i], fps, videoDuration);
       const basename = formatFrameBasename(frameIndex);
-      const destPath = path.join(outputDir, `${basename}.jpg`);
+      const destPath = path.join(outputDir, formatKeyframeFilename(frameIndex));
       const srcPath = path.join(scratchDir, batchFiles[i].name);
 
       try {

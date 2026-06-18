@@ -8,9 +8,10 @@ const path = require('path');
 const config = require('../config');
 const logger = require('../utils/logger');
 const {
-  formatFrameBasename,
+  formatFrameFilename,
+  formatKeyframeFilename,
   frameIndexToTimestamp,
-  parseFrameBasename,
+  parseFrameFilename,
 } = require('../utils/frameTimestamp');
 
 /**
@@ -30,32 +31,39 @@ function getCoverPath(movieId) {
  */
 function getFramePath(movieId, frameIndex) {
   const movieFrameDir = path.join(config.paths.frames, movieId);
-  return path.join(movieFrameDir, `${formatFrameBasename(frameIndex)}.jpg`);
+  return path.join(movieFrameDir, formatFrameFilename(frameIndex));
 }
 
-function getFrameMetaPath(movieId, frameIndex) {
+function getKeyframeFramePath(movieId, frameIndex) {
   const movieFrameDir = path.join(config.paths.frames, movieId);
-  return path.join(movieFrameDir, `${formatFrameBasename(frameIndex)}.meta.json`);
+  return path.join(movieFrameDir, formatKeyframeFilename(frameIndex));
+}
+
+/**
+ * Resolve cached frame file (.jpg or .key.jpg) for a frame index.
+ * @returns {Promise<{ path: string, filename: string, isKeyframe: boolean }|null>}
+ */
+async function resolveFrameFile(movieId, frameIndex) {
+  const candidates = [
+    { path: getKeyframeFramePath(movieId, frameIndex), isKeyframe: true },
+    { path: getFramePath(movieId, frameIndex), isKeyframe: false },
+  ];
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate.path)) {
+      return {
+        path: candidate.path,
+        filename: path.basename(candidate.path),
+        isKeyframe: candidate.isKeyframe,
+      };
+    }
+  }
+
+  return null;
 }
 
 function getKeyframesManifestPath(movieId) {
   return path.join(config.paths.frames, movieId, 'keyframes.json');
-}
-
-async function saveFrameMeta(movieId, frameIndex, meta) {
-  const metaPath = getFrameMetaPath(movieId, frameIndex);
-  await fs.mkdir(path.dirname(metaPath), { recursive: true });
-  await fs.writeFile(metaPath, JSON.stringify(meta));
-}
-
-async function readFrameMeta(movieId, frameIndex) {
-  const metaPath = getFrameMetaPath(movieId, frameIndex);
-  try {
-    const data = await fs.readFile(metaPath, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
 }
 
 async function saveKeyframesManifest(movieId, data) {
@@ -398,29 +406,24 @@ async function deleteMovieCache(movieId) {
  */
 async function listCachedFrames(movieId, fps) {
   const dir = path.join(config.paths.frames, movieId);
-  const frames = [];
-  const manifest = await readKeyframesManifest(movieId);
-  const keyframeSet = new Set(manifest?.timestamps || []);
+  const frameMap = new Map();
 
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.jpg')) continue;
-      const frameIndex = parseFrameBasename(entry.name);
-      if (frameIndex == null) continue;
+      const parsed = parseFrameFilename(entry.name);
+      if (!parsed) continue;
 
-      const timestamp = frameIndexToTimestamp(frameIndex, fps);
+      const { frameIndex, isKeyframe } = parsed;
+      const existing = frameMap.get(frameIndex);
+      if (existing && !isKeyframe && existing.isKeyframe) continue;
+
       const fullPath = path.join(dir, entry.name);
       const stat = await fs.stat(fullPath);
-      let isKeyframe = keyframeSet.has(timestamp);
-      if (!isKeyframe) {
-        const meta = await readFrameMeta(movieId, frameIndex);
-        isKeyframe = meta?.isKeyframe === true;
-      }
-
-      frames.push({
+      frameMap.set(frameIndex, {
         frameIndex,
-        timestamp,
+        timestamp: frameIndexToTimestamp(frameIndex, fps),
         filename: entry.name,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
@@ -433,6 +436,7 @@ async function listCachedFrames(movieId, fps) {
     }
   }
 
+  const frames = Array.from(frameMap.values());
   frames.sort((a, b) => a.frameIndex - b.frameIndex);
   return frames;
 }
@@ -539,10 +543,9 @@ module.exports = {
   // Path getters
   getCoverPath,
   getFramePath,
-  getFrameMetaPath,
+  getKeyframeFramePath,
+  resolveFrameFile,
   getKeyframesManifestPath,
-  saveFrameMeta,
-  readFrameMeta,
   saveKeyframesManifest,
   readKeyframesManifest,
   getClipPath,

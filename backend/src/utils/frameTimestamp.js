@@ -63,13 +63,35 @@ function formatFrameBasename(frameIndex) {
 
 /**
  * Parse a frame image filename into frame index.
- * @param {string} filename - e.g. "00000123.jpg"
+ * @param {string} filename - e.g. "00000123.jpg" or "00000123.key.jpg"
  * @returns {number|null}
  */
 function parseFrameBasename(filename) {
-  const match = filename.match(/^(\d+)\.jpg$/i);
+  const parsed = parseFrameFilename(filename);
+  return parsed?.frameIndex ?? null;
+}
+
+/**
+ * @param {string} filename - e.g. "00000123.jpg" or "00000123.key.jpg"
+ * @returns {{ frameIndex: number, isKeyframe: boolean }|null}
+ */
+function parseFrameFilename(filename) {
+  const match = filename.match(/^(\d+)(?:\.key)?\.jpg$/i);
   if (!match) return null;
-  return parseInt(match[1], 10);
+  return {
+    frameIndex: parseInt(match[1], 10),
+    isKeyframe: /\.key\.jpg$/i.test(filename),
+  };
+}
+
+/** @param {number} frameIndex */
+function formatFrameFilename(frameIndex) {
+  return `${formatFrameBasename(frameIndex)}.jpg`;
+}
+
+/** @param {number} frameIndex */
+function formatKeyframeFilename(frameIndex) {
+  return `${formatFrameBasename(frameIndex)}.key.jpg`;
 }
 
 module.exports = {
@@ -81,4 +103,7 @@ module.exports = {
   quantizeToFrame,
   formatFrameBasename,
   parseFrameBasename,
+  parseFrameFilename,
+  formatFrameFilename,
+  formatKeyframeFilename,
 };

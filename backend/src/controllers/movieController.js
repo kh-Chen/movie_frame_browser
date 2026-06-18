@@ -244,24 +244,21 @@ async function getFrame(req, res, next) {
     const frameWidth = parseInt(width) || config.frame.defaultWidth;
     const frameQuality = parseInt(quality) || config.frame.defaultQuality;
     
-    // Check if frame exists in cache
-    const framePath = storageService.getFramePath(id, frameIndex);
-    const exists = await storageService.fileExists(framePath);
-    
-    if (exists) {
-      // Redirect to static file
-      return res.redirect(staticUrl('frames', id, `${formatFrameBasename(frameIndex)}.jpg`));
+    // Check if frame exists in cache (.jpg or .key.jpg)
+    const cached = await storageService.resolveFrameFile(id, frameIndex);
+
+    if (cached) {
+      return res.redirect(staticUrl('frames', id, cached.filename));
     }
-    
-    // Generate frame on-demand
-    const outputPath = framePath;
-    
+    // Generate frame on-demand (plain .jpg, not keyframe batch)
+    const outputPath = storageService.getFramePath(id, frameIndex);
+
     try {
       await ffmpegService.extractFrame(movie.originalPath, ts, outputPath, {
         width: frameWidth,
         quality: frameQuality,
       });
-      
+
       res.redirect(staticUrl('frames', id, `${formatFrameBasename(frameIndex)}.jpg`));
     } catch (error) {
       logger.error('Frame extraction failed', { movieId: id, timestamp: ts, error: error.message });
@@ -572,11 +569,6 @@ async function extractAllKeyframes(req, res, next) {
           },
           async (pct, msg) => onProgress(pct, msg)
         );
-
-        for (const ts of timestamps) {
-          const frameIndex = toFrameIndex(ts, params.fps, params.duration);
-          await storageService.saveFrameMeta(taskMovieId, frameIndex, { isKeyframe: true });
-        }
 
         await storageService.saveKeyframesManifest(taskMovieId, {
           timestamps,

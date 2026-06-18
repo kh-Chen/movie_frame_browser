@@ -7,6 +7,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const config = require('../config');
 const logger = require('../utils/logger');
+const {
+  formatFrameBasename,
+  frameIndexToTimestamp,
+  parseFrameBasename,
+} = require('../utils/frameTimestamp');
 
 /**
  * Get cover image path for a movie
@@ -18,32 +23,33 @@ function getCoverPath(movieId) {
 }
 
 /**
- * Get frame image path for a movie at specific timestamp
+ * Get frame image path for a movie by frame index
  * @param {string} movieId - Movie ID
- * @param {number} timestamp - Timestamp in seconds
+ * @param {number} frameIndex - Zero-based frame index
  * @returns {string} Frame image path
  */
-function getFramePath(movieId, timestamp) {
+function getFramePath(movieId, frameIndex) {
   const movieFrameDir = path.join(config.paths.frames, movieId);
-  return path.join(movieFrameDir, `${timestamp}.jpg`);
+  return path.join(movieFrameDir, `${formatFrameBasename(frameIndex)}.jpg`);
 }
 
-function getFrameMetaPath(movieId, timestamp) {
-  return getFramePath(movieId, timestamp).replace(/\.jpg$/, '.meta.json');
+function getFrameMetaPath(movieId, frameIndex) {
+  const movieFrameDir = path.join(config.paths.frames, movieId);
+  return path.join(movieFrameDir, `${formatFrameBasename(frameIndex)}.meta.json`);
 }
 
 function getKeyframesManifestPath(movieId) {
   return path.join(config.paths.frames, movieId, 'keyframes.json');
 }
 
-async function saveFrameMeta(movieId, timestamp, meta) {
-  const metaPath = getFrameMetaPath(movieId, timestamp);
+async function saveFrameMeta(movieId, frameIndex, meta) {
+  const metaPath = getFrameMetaPath(movieId, frameIndex);
   await fs.mkdir(path.dirname(metaPath), { recursive: true });
   await fs.writeFile(metaPath, JSON.stringify(meta));
 }
 
-async function readFrameMeta(movieId, timestamp) {
-  const metaPath = getFrameMetaPath(movieId, timestamp);
+async function readFrameMeta(movieId, frameIndex) {
+  const metaPath = getFrameMetaPath(movieId, frameIndex);
   try {
     const data = await fs.readFile(metaPath, 'utf8');
     return JSON.parse(data);
@@ -390,7 +396,7 @@ async function deleteMovieCache(movieId) {
  * @param {string} movieId
  * @returns {Promise<Array<{timestamp: number, size: number, createdAt: string}>>}
  */
-async function listCachedFrames(movieId) {
+async function listCachedFrames(movieId, fps) {
   const dir = path.join(config.paths.frames, movieId);
   const frames = [];
   const manifest = await readKeyframesManifest(movieId);
@@ -400,19 +406,22 @@ async function listCachedFrames(movieId) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.jpg')) continue;
-      const timestamp = parseFloat(entry.name.replace('.jpg', ''));
-      if (isNaN(timestamp)) continue;
+      const frameIndex = parseFrameBasename(entry.name);
+      if (frameIndex == null) continue;
 
+      const timestamp = frameIndexToTimestamp(frameIndex, fps);
       const fullPath = path.join(dir, entry.name);
       const stat = await fs.stat(fullPath);
       let isKeyframe = keyframeSet.has(timestamp);
       if (!isKeyframe) {
-        const meta = await readFrameMeta(movieId, timestamp);
+        const meta = await readFrameMeta(movieId, frameIndex);
         isKeyframe = meta?.isKeyframe === true;
       }
 
       frames.push({
+        frameIndex,
         timestamp,
+        filename: entry.name,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
         isKeyframe,
@@ -424,7 +433,7 @@ async function listCachedFrames(movieId) {
     }
   }
 
-  frames.sort((a, b) => a.timestamp - b.timestamp);
+  frames.sort((a, b) => a.frameIndex - b.frameIndex);
   return frames;
 }
 

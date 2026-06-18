@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const config = require('../config');
 const logger = require('../utils/logger');
 const { formatTime } = require('../utils/timeFormatter');
+const { DEFAULT_FPS, formatFrameBasename, getFrameIndex, quantizeToFrame } = require('../utils/frameTimestamp');
 
 /**
  * Get FFmpeg binary path (uses system ffmpeg by default)
@@ -452,6 +453,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
   const {
     tempDir,
     duration: knownDuration = null,
+    fps = DEFAULT_FPS,
     width = config.frame.defaultWidth,
     quality = config.frame.defaultQuality,
   } = options;
@@ -537,9 +539,13 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
       throw new Error('关键帧提取未产出任何文件');
     }
 
+    const savedTimestamps = [];
+    const seenFrameKeys = new Set();
+
     for (let i = 0; i < count; i++) {
-      const ts = timestamps[i];
-      const destPath = path.join(outputDir, `${ts}.jpg`);
+      const frameIndex = getFrameIndex(timestamps[i], fps, videoDuration);
+      const basename = formatFrameBasename(frameIndex);
+      const destPath = path.join(outputDir, `${basename}.jpg`);
       const srcPath = path.join(scratchDir, batchFiles[i].name);
 
       try {
@@ -547,6 +553,11 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
         await fs.unlink(srcPath);
       } catch {
         await fs.rename(srcPath, destPath);
+      }
+
+      if (!seenFrameKeys.has(basename)) {
+        seenFrameKeys.add(basename);
+        savedTimestamps.push(quantizeToFrame(timestamps[i], fps, videoDuration));
       }
 
       if (progressCallback) {
@@ -557,10 +568,10 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
 
     logger.info('Keyframe batch extraction completed', {
       probed: timestamps.length,
-      saved: count,
+      saved: savedTimestamps.length,
     });
 
-    return { timestamps: timestamps.slice(0, count), total: count };
+    return { timestamps: savedTimestamps, total: savedTimestamps.length };
   } finally {
     await fs.rm(scratchDir, { recursive: true, force: true });
   }

@@ -12,6 +12,13 @@ const ffmpegService = require('../services/ffmpegService');
 const { taskQueue, PRIORITY } = require('../services/taskQueue');
 const { processMovieIngest } = require('../services/movieProcessService');
 const { getAdaptiveFrameInterval } = require('../utils/frameInterval');
+const {
+  DEFAULT_FPS,
+  formatFrameTimestamp,
+  formatFrameBasename,
+  getFrameIndex: toFrameIndex,
+  quantizeToFrame,
+} = require('../utils/frameTimestamp');
 const { resolvePathWithinRoot } = require('../utils/pathSecurity');
 const { generateMovieId } = require('../utils/idGenerator');
 const { formatTime, formatFileSize } = require('../utils/timeFormatter');
@@ -82,6 +89,7 @@ async function getMovie(req, res, next) {
       coverUrl,
       frames: `/api/movies/${id}/frames`,
       status: movie.status,
+      fps: movie.fps || DEFAULT_FPS,
       frameInterval: movie.frameInterval,
       keyframesExtracted: movie.keyframesExtracted === true,
       keyframesCount: movie.keyframesCount || 0,
@@ -220,9 +228,12 @@ async function getFrame(req, res, next) {
       });
     }
     
-    const ts = Math.round(parseFloat(timestamp) * 1000) / 1000;
+    const fps = movie.fps || DEFAULT_FPS;
+    const rawTs = parseFloat(timestamp);
+    const frameIndex = toFrameIndex(rawTs, fps, movie.duration);
+    const ts = quantizeToFrame(rawTs, fps, movie.duration);
 
-    if (isNaN(ts) || ts < 0 || ts > movie.duration) {
+    if (isNaN(rawTs) || ts < 0 || ts > movie.duration) {
       return res.status(400).json({
         error: 'INVALID_TIMESTAMP',
         message: '无效的时间戳',
@@ -234,12 +245,12 @@ async function getFrame(req, res, next) {
     const frameQuality = parseInt(quality) || config.frame.defaultQuality;
     
     // Check if frame exists in cache
-    const framePath = storageService.getFramePath(id, ts);
+    const framePath = storageService.getFramePath(id, frameIndex);
     const exists = await storageService.fileExists(framePath);
     
     if (exists) {
       // Redirect to static file
-      return res.redirect(staticUrl('frames', id, `${ts}.jpg`));
+      return res.redirect(staticUrl('frames', id, `${formatFrameBasename(frameIndex)}.jpg`));
     }
     
     // Generate frame on-demand
@@ -251,7 +262,7 @@ async function getFrame(req, res, next) {
         quality: frameQuality,
       });
       
-      res.redirect(staticUrl('frames', id, `${ts}.jpg`));
+      res.redirect(staticUrl('frames', id, `${formatFrameBasename(frameIndex)}.jpg`));
     } catch (error) {
       logger.error('Frame extraction failed', { movieId: id, timestamp: ts, error: error.message });
       
@@ -438,11 +449,13 @@ async function listCachedFrames(req, res, next) {
       });
     }
 
-    const cached = await storageService.listCachedFrames(id);
+    const fps = movie.fps || DEFAULT_FPS;
+    const cached = await storageService.listCachedFrames(id, fps);
     const frames = cached.map((frame) => ({
       timestamp: frame.timestamp,
-      url: staticUrl('frames', id, `${frame.timestamp}.jpg`),
-      apiUrl: `/api/movies/${id}/frames/${frame.timestamp}`,
+      frameIndex: frame.frameIndex,
+      url: staticUrl('frames', id, frame.filename),
+      apiUrl: `/api/movies/${id}/frames/${formatFrameTimestamp(frame.timestamp)}`,
       size: frame.size,
       createdAt: frame.createdAt,
       isKeyframe: frame.isKeyframe === true,
@@ -475,11 +488,15 @@ async function listKeyframes(req, res, next) {
     }
 
     const manifest = await storageService.readKeyframesManifest(id);
+    const fps = movie.fps || DEFAULT_FPS;
     const timestamps = manifest?.timestamps || [];
-    const keyframes = timestamps.map((timestamp) => ({
-      timestamp,
-      url: `/api/movies/${id}/frames/${timestamp}`,
-    }));
+    const keyframes = timestamps.map((timestamp) => {
+      const ts = quantizeToFrame(timestamp, fps, movie.duration);
+      return {
+        timestamp,
+        url: `/api/movies/${id}/frames/${formatFrameTimestamp(ts)}`,
+      };
+    });
 
     res.json({
       movieId: id,
@@ -539,6 +556,7 @@ async function extractAllKeyframes(req, res, next) {
       params: {
         moviePath: movie.originalPath,
         duration: movie.duration,
+        fps: movie.fps || DEFAULT_FPS,
       },
       execute: async ({ onProgress, params, movieId: taskMovieId }) => {
         const frameDir = path.join(config.paths.frames, taskMovieId);
@@ -549,13 +567,15 @@ async function extractAllKeyframes(req, res, next) {
           frameDir,
           {
             duration: params.duration,
+            fps: params.fps,
             tempDir,
           },
           async (pct, msg) => onProgress(pct, msg)
         );
 
         for (const ts of timestamps) {
-          await storageService.saveFrameMeta(taskMovieId, ts, { isKeyframe: true });
+          const frameIndex = toFrameIndex(ts, params.fps, params.duration);
+          await storageService.saveFrameMeta(taskMovieId, frameIndex, { isKeyframe: true });
         }
 
         await storageService.saveKeyframesManifest(taskMovieId, {
@@ -947,6 +967,7 @@ async function selectLocalMovie(req, res, next) {
       resolution: `${videoInfo.width}x${videoInfo.height}`,
       codec: videoInfo.codec,
       bitrate: videoInfo.bitrate,
+      fps: videoInfo.fps,
       uploadedAt: new Date().toISOString(),
       status: 'processing',
       coverFile: null,

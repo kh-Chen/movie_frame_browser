@@ -32,7 +32,7 @@
         <FrameDisplay
           :src="currentFrameUrl"
           :timestamp="currentTimestamp"
-          :is-loading="isFrameLoading(currentTimestamp)"
+          :is-loading="isFrameLoading(currentTimestamp, movie?.fps, movie?.duration)"
           :clip-mode="isClipMode"
           :clip-url="clipUrl"
           :clip-loading="clipLoading"
@@ -104,6 +104,8 @@
       :movie-id="movieId"
       :current-timestamp="currentTimestamp"
       :resolution="movie?.resolution"
+      :fps="movie?.fps"
+      :duration="movie?.duration"
       @close="showKeyframeBrowser = false"
       @select="handleKeyframeSelect"
     />
@@ -292,7 +294,13 @@ const PRELOAD_RANGE_SEC = 1
 // Computed
 const currentFrameUrl = computed(() => {
   if (!movie.value || currentTimestamp.value === null) return null
-  return getFrameUrl(movieId.value, currentTimestamp.value)
+  return getFrameUrl(
+    movieId.value,
+    currentTimestamp.value,
+    1280,
+    movie.value.fps,
+    movie.value.duration
+  )
 })
 
 const progressText = computed(() => {
@@ -398,7 +406,14 @@ const schedulePreload = (timestamp) => {
   }
   
   preloadTimer = setTimeout(() => {
-    preloadFrames(movieId.value, timestamp, PRELOAD_RANGE_SEC)
+    preloadFrames(
+      movieId.value,
+      timestamp,
+      PRELOAD_RANGE_SEC,
+      1280,
+      movie.value?.fps,
+      movie.value?.duration
+    )
   }, 300)
 }
 

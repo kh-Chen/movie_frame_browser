@@ -52,7 +52,7 @@
           >
             <div class="thumb-wrap">
               <img
-                :src="getFrameUrl(movieId, frame.timestamp, 320)"
+                :src="buildFrameUrl(frame.timestamp, 320)"
                 :alt="`Frame at ${formatTime(frame.timestamp)}`"
                 class="media-thumb"
                 loading="lazy"
@@ -84,7 +84,7 @@
           >
             <div class="clip-thumb">
               <img
-                :src="getFrameUrl(movieId, clip.timestamp, 320)"
+                :src="buildFrameUrl(clip.timestamp, 320)"
                 :alt="`Clip ${formatClipRange(clip)}`"
                 class="media-thumb"
                 loading="lazy"
@@ -109,7 +109,7 @@
           <div class="lightbox-content">
             <button class="lightbox-close" @click="selectedFrame = null">✕</button>
             <img
-              :src="getFrameUrl(movieId, selectedFrame.timestamp, 1280)"
+              :src="buildFrameUrl(selectedFrame.timestamp, 1280)"
               :alt="`Frame at ${formatTime(selectedFrame.timestamp)}`"
               class="lightbox-image"
             />
@@ -137,6 +137,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMovieApi } from '../composables/useMovieApi'
+import { DEFAULT_FPS } from '../utils/frameTimestamp'
 import { formatTime, formatTimeShort, formatFileSize } from '../utils/formatTime'
 import ClipPreview from '../components/ClipPreview.vue'
 
@@ -159,6 +160,16 @@ const activeTab = ref('frames')
 const selectedFrame = ref(null)
 const showClip = ref(false)
 const selectedClipTimestamp = ref(0)
+
+const buildFrameUrl = (timestamp, width = 320) => (
+  getFrameUrl(
+    movieId,
+    timestamp,
+    width,
+    movie.value?.fps || DEFAULT_FPS,
+    movie.value?.duration
+  )
+)
 
 const formatSize = (bytes) => formatFileSize(bytes)
 

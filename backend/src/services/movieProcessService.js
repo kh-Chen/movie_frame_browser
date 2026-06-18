@@ -42,6 +42,7 @@ async function processMovieIngest({ movieId, moviePath, videoInfo, onProgress })
 
   await cacheService.updateMovie(movieId, {
     status: 'ready',
+    fps: videoInfo.fps,
     frameInterval,
     totalFrames: expectedFrames,
   });

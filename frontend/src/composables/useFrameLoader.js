@@ -1,6 +1,7 @@
 import { ref, shallowRef } from 'vue'
 import { useMovieStore } from '../stores/movieStore'
 import { API_BASE } from '../utils/api'
+import { DEFAULT_FPS, formatFrameTimestamp, quantizeToFrame } from '../utils/frameTimestamp'
 
 export function useFrameLoader() {
   const store = useMovieStore()
@@ -17,8 +18,9 @@ export function useFrameLoader() {
   /**
    * Get frame from cache or load it
    */
-  const getFrame = async (movieId, timestamp, width = 1280) => {
-    const cacheKey = `${movieId}_${timestamp}_${width}`
+  const getFrame = async (movieId, timestamp, width = 1280, fps = DEFAULT_FPS, duration = Infinity) => {
+    const frameTimestamp = formatFrameTimestamp(quantizeToFrame(timestamp, fps, duration))
+    const cacheKey = `${movieId}_${frameTimestamp}_${width}`
     
     // Check memory cache first
     if (frameCache.value.has(cacheKey)) {
@@ -41,7 +43,7 @@ export function useFrameLoader() {
     }
     
     // Create loading promise
-    const loadPromise = loadFrame(movieId, timestamp, width, cacheKey)
+    const loadPromise = loadFrame(movieId, frameTimestamp, width, cacheKey)
     pendingRequests.value.set(cacheKey, loadPromise)
     
     try {
@@ -55,12 +57,11 @@ export function useFrameLoader() {
   /**
    * Load frame image
    */
-  const loadFrame = async (movieId, timestamp, width, cacheKey) => {
-    loadingFrames.value.add(timestamp)
+  const loadFrame = async (movieId, frameTimestamp, width, cacheKey) => {
+    loadingFrames.value.add(frameTimestamp)
     
     try {
-      const timestampSec = Math.round(timestamp * 1000) / 1000
-      const url = `${API_BASE}/movies/${movieId}/frames/${timestampSec}?width=${width}`
+      const url = `${API_BASE}/movies/${movieId}/frames/${frameTimestamp}?width=${width}`
       
       const img = new Image()
       img.crossOrigin = 'anonymous'
@@ -77,10 +78,10 @@ export function useFrameLoader() {
       
       return img.src
     } catch (error) {
-      console.error(`Failed to load frame at ${timestamp}:`, error)
+      console.error(`Failed to load frame at ${frameTimestamp}:`, error)
       return null
     } finally {
-      loadingFrames.value.delete(timestamp)
+      loadingFrames.value.delete(frameTimestamp)
     }
   }
   
@@ -99,7 +100,7 @@ export function useFrameLoader() {
   /**
    * Preload frames around a timestamp
    */
-  const preloadFrames = async (movieId, timestamp, range = 5, width = 1280) => {
+  const preloadFrames = async (movieId, timestamp, range = 5, width = 1280, fps = DEFAULT_FPS, duration = Infinity) => {
     const promises = []
     const interval = 1 // 1 second interval for preloading
     
@@ -107,7 +108,7 @@ export function useFrameLoader() {
       if (i === 0) continue // Skip current timestamp
       const t = timestamp + i * interval
       if (t >= 0) {
-        promises.push(getFrame(movieId, t, width))
+        promises.push(getFrame(movieId, t, width, fps, duration))
       }
     }
     
@@ -117,8 +118,9 @@ export function useFrameLoader() {
   /**
    * Check if frame is loading
    */
-  const isLoading = (timestamp) => {
-    return loadingFrames.value.has(timestamp)
+  const isLoading = (timestamp, fps = DEFAULT_FPS, duration = Infinity) => {
+    const frameTimestamp = formatFrameTimestamp(quantizeToFrame(timestamp, fps, duration))
+    return loadingFrames.value.has(frameTimestamp)
   }
   
   /**

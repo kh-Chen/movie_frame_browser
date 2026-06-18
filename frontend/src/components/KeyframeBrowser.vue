@@ -32,7 +32,7 @@
                 <div class="kf-image-slot">
                   <img
                     v-if="visibleMap[kf.timestamp]"
-                    :src="getFrameUrl(movieId, kf.timestamp, 1280)"
+                    :src="buildFrameUrl(kf.timestamp, 1280)"
                     :alt="`关键帧 ${formatTimeShort(kf.timestamp)}`"
                     class="kf-image"
                     decoding="async"
@@ -51,6 +51,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { useMovieApi } from '../composables/useMovieApi'
+import { DEFAULT_FPS } from '../utils/frameTimestamp'
 import { formatTimeShort } from '../utils/formatTime'
 
 const PRELOAD_NEIGHBORS = 8
@@ -73,11 +74,26 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  fps: {
+    type: Number,
+    default: undefined,
+  },
+  duration: {
+    type: Number,
+    default: undefined,
+  },
 })
 
 defineEmits(['close', 'select'])
 
 const { getKeyframes, getFrameUrl } = useMovieApi()
+
+const frameFps = computed(() => props.fps || DEFAULT_FPS)
+const frameDuration = computed(() => props.duration ?? Infinity)
+
+const buildFrameUrl = (timestamp, width = 1280) => (
+  getFrameUrl(props.movieId, timestamp, width, frameFps.value, frameDuration.value)
+)
 
 const keyframes = ref([])
 const isLoading = ref(false)

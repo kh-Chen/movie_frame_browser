@@ -1,4 +1,5 @@
 import api, { API_BASE } from '../utils/api'
+import { DEFAULT_FPS, formatFrameTimestamp, quantizeToFrame } from '../utils/frameTimestamp'
 
 export const useMovieApi = () => {
   /**
@@ -32,8 +33,8 @@ export const useMovieApi = () => {
   /**
    * 获取帧图片URL
    */
-  const getFrameUrl = (id, timestamp, width = 1280) => {
-    const t = Math.round(timestamp * 1000) / 1000
+  const getFrameUrl = (id, timestamp, width = 1280, fps = DEFAULT_FPS, duration = Infinity) => {
+    const t = formatFrameTimestamp(quantizeToFrame(timestamp, fps, duration))
     return `${API_BASE}/movies/${id}/frames/${t}?width=${width}`
   }
 

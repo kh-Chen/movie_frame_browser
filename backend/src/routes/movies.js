@@ -21,6 +21,7 @@ router.get('/:id/frames/cached', movieController.listCachedFrames);
 router.get('/:id/frames', movieController.getFrameIndex);
 router.get('/:id/frames/:timestamp', movieController.getFrame);
 router.get('/:id/keyframe', movieController.getKeyframe);
+router.get('/:id/keyframes', movieController.listKeyframes);
 router.post('/:id/keyframes/extract', movieController.extractAllKeyframes);
 router.get('/:id/clips', movieController.listCachedClips);
 router.get('/:id/clip', movieController.getClip);

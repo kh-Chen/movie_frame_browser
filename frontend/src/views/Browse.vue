@@ -10,8 +10,8 @@
         <span class="progress-text">{{ progressText }}</span>
       </div>
       <div class="header-actions">
-        <button class="action-btn" @click="showInfo = true" title="电影信息">
-          <span>ℹ️</span>
+        <button class="action-btn browse-kf-btn" @click="handleBrowseKeyframes" title="浏览关键帧">
+          浏览关键帧
         </button>
         <button class="action-btn keyframe-btn" @click="handleExtractKeyframes" :disabled="isExtracting" title="抽取所有关键帧">
           <span>{{ isExtracting ? '⏳' : '🎞️' }}</span>
@@ -98,6 +98,32 @@
       </section>
     </main>
     
+    <!-- Keyframe browser -->
+    <KeyframeBrowser
+      :visible="showKeyframeBrowser"
+      :movie-id="movieId"
+      :current-timestamp="currentTimestamp"
+      :resolution="movie?.resolution"
+      @close="showKeyframeBrowser = false"
+      @select="handleKeyframeSelect"
+    />
+
+    <!-- Keyframe not extracted notice -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showKeyframeUnavailable" class="confirm-overlay" @click.self="showKeyframeUnavailable = false">
+          <div class="confirm-modal">
+            <h3>关键帧未采集</h3>
+            <p>该视频尚未完成关键帧采集，无法浏览全部关键帧。请先点击 🎞️ 按钮采集全部关键帧。</p>
+            <div class="confirm-actions">
+              <button class="cancel-btn" @click="showKeyframeUnavailable = false">取消</button>
+              <button class="cancel-btn extract-btn" @click="startExtractFromNotice">开始采集</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Movie Info Modal -->
     <Teleport to="body">
       <Transition name="slide-up">
@@ -212,6 +238,7 @@ import { formatDuration, formatFileSize, formatTimeShort } from '../utils/format
 import FrameDisplay from '../components/FrameDisplay.vue'
 import Timeline from '../components/Timeline.vue'
 import LoadingOverlay from '../components/LoadingOverlay.vue'
+import KeyframeBrowser from '../components/KeyframeBrowser.vue'
 import { useClipLoader } from '../composables/useClipLoader'
 
 const props = defineProps({
@@ -249,6 +276,8 @@ const {
   markError: markClipError,
 } = useClipLoader(movieId.value)
 const showInfo = ref(false)
+const showKeyframeBrowser = ref(false)
+const showKeyframeUnavailable = ref(false)
 const showDeleteConfirm = ref(false)
 const showExtractedNotice = ref(false)
 const showExtractStarted = ref(false)
@@ -374,7 +403,7 @@ const schedulePreload = (timestamp) => {
 }
 
 const handleKeydown = (event) => {
-  if (showInfo.value || showDeleteConfirm.value || showExtractedNotice.value || showExtractStarted.value) return
+  if (showInfo.value || showDeleteConfirm.value || showExtractedNotice.value || showExtractStarted.value || showKeyframeBrowser.value || showKeyframeUnavailable.value) return
   if (isClipMode.value) return
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
@@ -427,6 +456,27 @@ const goBack = () => {
 // Confirm delete
 const confirmDelete = () => {
   showDeleteConfirm.value = true
+}
+
+const handleBrowseKeyframes = () => {
+  if (!movie.value) return
+  if (!movie.value.keyframesExtracted) {
+    showKeyframeUnavailable.value = true
+    return
+  }
+  stopClipPreview()
+  showKeyframeBrowser.value = true
+}
+
+const handleKeyframeSelect = (timestamp) => {
+  currentTimestamp.value = timestamp
+  schedulePreload(timestamp)
+  showKeyframeBrowser.value = false
+}
+
+const startExtractFromNotice = () => {
+  showKeyframeUnavailable.value = false
+  handleExtractKeyframes()
 }
 
 const handleExtractKeyframes = async () => {
@@ -571,6 +621,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.action-btn.browse-kf-btn {
+  width: auto;
+  padding: 0 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.action-btn.browse-kf-btn:hover {
+  background-color: rgba(233, 69, 96, 0.25);
 }
 
 .action-btn.keyframe-btn:hover {
@@ -863,6 +925,11 @@ onUnmounted(() => {
 .cancel-btn {
   background-color: rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
+}
+
+.extract-btn {
+  background-color: var(--accent);
+  color: #fff;
 }
 
 .delete-btn {

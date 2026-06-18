@@ -459,6 +459,40 @@ async function listCachedFrames(req, res, next) {
 }
 
 /**
+ * List all extracted keyframe timestamps for a movie
+ */
+async function listKeyframes(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    const manifest = await storageService.readKeyframesManifest(id);
+    const timestamps = manifest?.timestamps || [];
+    const keyframes = timestamps.map((timestamp) => ({
+      timestamp,
+      url: `/api/movies/${id}/frames/${timestamp}`,
+    }));
+
+    res.json({
+      movieId: id,
+      extracted: movie.keyframesExtracted === true,
+      total: keyframes.length,
+      keyframes,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Extract all keyframes for a movie (background task)
  */
 async function extractAllKeyframes(req, res, next) {
@@ -958,6 +992,7 @@ module.exports = {
   getFrameIndex,
   getFrame,
   getKeyframe,
+  listKeyframes,
   extractAllKeyframes,
   getClip,
   listCachedFrames,

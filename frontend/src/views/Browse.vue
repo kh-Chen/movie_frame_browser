@@ -51,9 +51,9 @@
 
       <!-- Seek toolbar -->
       <section class="seek-toolbar">
+        <button type="button" class="toolbar-btn" @click="seekBy(-60)">-60s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(-30)">-30s</button>
         <button type="button" class="toolbar-btn" @click="seekBy(-10)">-10s</button>
-        <button type="button" class="toolbar-btn" @click="seekBy(-5)">-5s</button>
-        <button type="button" class="toolbar-btn" @click="seekBy(-3)">-3s</button>
         <button
           type="button"
           class="toolbar-btn toolbar-btn--accent"
@@ -62,9 +62,9 @@
         >
           {{ isClipMode ? '停止' : '预览' }}
         </button>
-        <button type="button" class="toolbar-btn" @click="seekBy(3)">+3s</button>
-        <button type="button" class="toolbar-btn" @click="seekBy(5)">+5s</button>
         <button type="button" class="toolbar-btn" @click="seekBy(10)">+10s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(30)">+30s</button>
+        <button type="button" class="toolbar-btn" @click="seekBy(60)">+60s</button>
       </section>
       
       <!-- Timeline -->

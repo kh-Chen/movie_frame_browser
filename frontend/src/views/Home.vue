@@ -42,8 +42,8 @@
           <p class="empty-hint">点击上方按钮从本地目录添加电影</p>
         </div>
         
-        <!-- Movie grid -->
-        <div v-else class="movie-grid">
+        <!-- Movie list -->
+        <div v-else class="movie-list">
           <MovieCard
             v-for="movie in movies"
             :key="movie.id"
@@ -297,27 +297,15 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 
-.movie-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
+.movie-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-/* Tablet and up */
 @media (min-width: 768px) {
   .page-content {
     padding: 32px;
-  }
-  
-  .movie-grid {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-  }
-}
-
-@media (min-width: 1024px) {
-  .movie-grid {
-    grid-template-columns: repeat(4, 1fr);
   }
 }
 

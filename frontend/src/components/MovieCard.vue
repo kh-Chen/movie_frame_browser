@@ -1,36 +1,20 @@
 <template>
-  <div class="movie-card" @click="handleClick">
-    <div class="movie-cover">
-      <img 
-        v-if="coverUrl" 
-        :src="coverUrl" 
-        :alt="movie.name"
-        :class="{ loaded: coverLoaded }"
-        @load="coverLoaded = true"
-        @error="coverError = true"
-      />
-      <div v-else class="cover-placeholder">
-        <span class="placeholder-icon">🎬</span>
-      </div>
-      <div v-if="movie.status === 'processing'" class="processing-overlay">
-        <div class="processing-spinner"></div>
-        <span>处理中</span>
-      </div>
-    </div>
-    <div class="movie-info">
-      <h3 class="movie-name">{{ movie.name }}</h3>
-      <div class="movie-meta">
-        <span class="duration">{{ formatDuration(movie.duration) }}</span>
-        <span v-if="movie.resolution" class="resolution">{{ movie.resolution }}</span>
-      </div>
+  <div class="movie-row" @click="handleClick">
+    <div class="movie-name" :title="displayName">{{ displayName }}</div>
+    <div class="movie-meta">
+      <span v-if="movie.status === 'processing'" class="status-processing">
+        <span class="processing-dot"></span>
+        处理中
+      </span>
+      <span v-if="movie.duration" class="duration">{{ formatDuration(movie.duration) }}</span>
+      <span v-if="movie.resolution" class="resolution">{{ movie.resolution }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMovieApi } from '../composables/useMovieApi'
 import { formatDuration } from '../utils/formatTime'
 
 const props = defineProps({
@@ -41,17 +25,8 @@ const props = defineProps({
 })
 
 const router = useRouter()
-const { getCoverUrl } = useMovieApi()
 
-const coverUrl = computed(() => {
-  if (props.movie.coverStatus === 'ready') {
-    return getCoverUrl(props.movie.id)
-  }
-  return null
-})
-
-const coverLoaded = ref(false)
-const coverError = ref(false)
+const displayName = computed(() => props.movie.originalName || props.movie.name)
 
 const handleClick = () => {
   const ready =
@@ -64,124 +39,77 @@ const handleClick = () => {
 </script>
 
 <style scoped>
-.movie-card {
+.movie-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
   background-color: var(--bg-secondary);
-  border-radius: 12px;
-  overflow: hidden;
+  border-radius: 8px;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: background-color 0.15s ease;
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.movie-card:active {
-  transform: scale(0.98);
+.movie-row:hover {
+  background-color: rgba(255, 255, 255, 0.06);
 }
 
-.movie-cover {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  background-color: var(--bg-primary);
-  overflow: hidden;
-}
-
-.movie-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.cover-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, var(--bg-secondary), var(--bg-primary));
-}
-
-.placeholder-icon {
-  font-size: 3rem;
-  opacity: 0.5;
-}
-
-.processing-overlay {
-  position: absolute;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-}
-
-.processing-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.progress-bar {
-  width: 60%;
-  height: 4px;
-  background-color: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background-color: var(--accent);
-  transition: width 0.3s ease;
-}
-
-.movie-info {
-  padding: 12px;
+.movie-row:active {
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
 .movie-name {
-  font-size: 0.9375rem;
-  font-weight: 600;
-  margin: 0 0 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.35;
   color: var(--text-primary);
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .movie-meta {
   display: flex;
-  gap: 8px;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.movie-meta span {
-  display: flex;
+  flex-shrink: 0;
   align-items: center;
+  gap: 8px;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding-top: 1px;
 }
 
-.movie-meta span::before {
-  content: '';
-  width: 4px;
-  height: 4px;
-  background-color: var(--text-secondary);
+.status-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+}
+
+.processing-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  margin-right: 6px;
+  background-color: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
-.movie-meta span:first-child::before {
-  display: none;
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (max-width: 480px) {
+  .movie-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .movie-meta {
+    padding-top: 0;
+  }
 }
 </style>

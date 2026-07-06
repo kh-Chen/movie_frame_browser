@@ -29,7 +29,11 @@ const { staticUrl } = require('../utils/staticUrl');
 function setClipMetaHeaders(res, meta) {
   if (!meta) return;
   res.set('X-Clip-Start', String(meta.startTime));
-  res.set('X-Clip-End', String(meta.endTime));
+  // 续播依赖关键帧对齐的结束边界（requestedEndTime）。
+  // meta.endTime 由生成 MP4 的容器时长反推，存在帧级取整误差，常略小于真正的结束关键帧，
+  // 会导致下一段 findKeyframeBefore 回退到上一个关键帧，产生整段重叠。
+  // requestedEndTime 是 findKeyframeAfter 探测到的关键帧时间，作为续播起点更稳定。
+  res.set('X-Clip-End', String(meta.requestedEndTime ?? meta.endTime));
 }
 
 /**

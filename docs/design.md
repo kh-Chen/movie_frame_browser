@@ -109,14 +109,13 @@
 
 ---
 
-### 1.3 片段预览交互
+### 1.3 片段预览交互（HLS 动态打包）
 
 - **触发方式**：浏览页工具栏「预览」按钮
-- **动画范围**：`CLIP_SEEK_BACK`（默认 1s）+ `CLIP_SEEK_FORWARD`（默认 5s），对齐关键帧
-- **格式**：H.264 MP4（`GET /api/movies/:id/clip?t=`）
-- **加载状态**：轮询 `GET /api/tasks/:taskId`，生成中显示进度
-- **缓存策略**：同时间戳 clip 已存在则直接返回 MP4 文件
-- **续播**：播放结束后点击续播，以下一段关键帧为起点生成新片段
+- **格式**：HLS（`GET /api/movies/:id/hls/playlist.m3u8?t=`），分片按关键帧对齐，`-c copy` 流式输出 MPEG-TS
+- **播放方式**：hls.js（或 Safari 原生 HLS）持续播放，直到用户关闭预览
+- **声音**：支持声音，默认关闭（muted）
+- **分片策略**：VOD playlist，分片边界对齐真实关键帧（贪心聚合，目标 6s/片），每片 TS 以 IDR 关键帧开头
 
 ---
 
@@ -134,8 +133,8 @@
 | GET | `/api/movies/:id/frames` | 获取帧索引（时间点列表） | 同步 |
 | GET | `/api/movies/:id/frames/cached` | 列出已缓存帧图 | 同步 |
 | GET | `/api/movies/:id/frames/:timestamp` | 获取指定时间戳帧图 | 同步（按需生成，302） |
-| GET | `/api/movies/:id/clip` | 生成/获取 MP4 预览片段 | 同步或异步 |
-| GET | `/api/movies/:id/clips` | 列出已缓存片段 | 同步 |
+| GET | `/api/movies/:id/hls/playlist.m3u8` | HLS playlist（关键帧对齐分片） | 同步 |
+| GET | `/api/movies/:id/hls/segment` | HLS TS 分片（流式，-c copy） | 同步（流式） |
 | GET | `/api/movies/:id/keyframe` | 查找相邻关键帧 | 同步 |
 | GET | `/api/movies/:id/keyframes` | 列出已采集关键帧时间戳 | 同步 |
 | POST | `/api/movies/:id/keyframes/extract` | 批量采集全片关键帧 | 异步 |
@@ -377,63 +376,56 @@ Location: /movie/static/frames/mv_001/120.jpg
 
 ---
 
-#### GET `/api/movies/:id/clip`
+#### GET `/api/movies/:id/hls/playlist.m3u8`
 
-生成或获取 MP4 预览片段。
+生成 HLS playlist（m3u8），分片边界对齐真实关键帧。从请求时间戳前最近的关键帧开始，覆盖到视频结尾。
 
 **查询参数**
 
 | 参数 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
-| t | number | 中心时间戳（秒） | 必需 |
-
-**响应 - 200 OK**（片段已存在）
-
-```
-Content-Type: video/mp4
-X-Clip-Start: 118.5
-X-Clip-End: 125.0
-[二进制 MP4 数据]
-```
-
-**响应 - 202 Accepted**（片段正在生成）
-
-```json
-{
-  "taskId": "clip_mv001_120",
-  "status": "generating",
-  "progress": 0,
-  "message": "片段生成中，请稍候"
-}
-```
-
-客户端轮询 `GET /api/tasks/:taskId`，完成后重新请求 clip URL。
-
----
-
-#### GET `/api/movies/:id/clips`
-
-列出已缓存的预览片段。
+| t | number | 请求预览的时间戳（秒） | 必需 |
 
 **响应 - 200 OK**
 
-```json
-{
-  "movieId": "mv_001",
-  "total": 3,
-  "clips": [
-    {
-      "timestamp": 120,
-      "startTime": 118.5,
-      "endTime": 125.0,
-      "duration": 6.5,
-      "url": "/api/movies/mv_001/clip?t=120",
-      "staticUrl": "/movie/static/clips/mv_001/t120.mp4",
-      "size": 1048576,
-      "createdAt": "2026-06-18T10:05:00Z"
-    }
-  ]
-}
+```
+Content-Type: application/vnd.apple.mpegurl
+Cache-Control: no-cache
+
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXTINF:6.123,
+segment?start=118.5&dur=6.123
+#EXTINF:5.877,
+segment?start=124.623&dur=5.877
+...
+#EXT-X-ENDLIST
+```
+
+分片 `start` 值均为关键帧时间戳，`-c copy` 输出的 TS 分片以 IDR 关键帧开头。
+
+---
+
+#### GET `/api/movies/:id/hls/segment`
+
+流式输出单个 HLS TS 分片（MPEG-TS），由 ffmpeg `-c copy` 即时生成，不写磁盘。
+
+**查询参数**
+
+| 参数 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| start | number | 分片起始时间（秒，应为关键帧时间戳） | 必需 |
+| dur | number | 分片时长（秒） | 必需 |
+
+**响应 - 200 OK**
+
+```
+Content-Type: video/mp2t
+Cache-Control: no-cache
+Transfer-Encoding: chunked
+
+[MPEG-TS 二进制流]
 ```
 
 ---

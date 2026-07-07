@@ -33,8 +33,16 @@ function createApp() {
   // CORS
   app.use(corsMiddleware);
   
-  // Compression for responses
-  app.use(compression());
+  // Compression for responses (skip binary streaming endpoints)
+  app.use(compression({
+    filter: (req, res) => {
+      const url = req.originalUrl || req.url || '';
+      if (/\/hls\/segment(?:\?|$)/.test(url)) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+  }));
   
   // Parse JSON bodies
   app.use(express.json({ limit: '10mb' }));

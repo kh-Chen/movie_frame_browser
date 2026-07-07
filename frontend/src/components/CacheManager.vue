@@ -17,10 +17,6 @@
                 <span class="overview-label">帧缓存</span>
                 <span class="overview-value">{{ formatSize(stats.frameCacheSize) }}</span>
               </div>
-              <div class="overview-item">
-                <span class="overview-label">片段缓存</span>
-                <span class="overview-value">{{ formatSize(stats.clipCacheSize) }}</span>
-              </div>
               <div class="overview-item total">
                 <span class="overview-label">总计</span>
                 <span class="overview-value">{{ formatSize(stats.totalSize) }}</span>
@@ -124,7 +120,6 @@ const isClearing = ref(false)
 const deletingId = ref(null)
 const stats = ref({
   frameCacheSize: 0,
-  clipCacheSize: 0,
   totalSize: 0,
   movies: [],
 })
@@ -161,7 +156,6 @@ const loadStats = async () => {
     const data = await getCacheStats()
     stats.value = {
       frameCacheSize: data.frameCacheSize ?? data.breakdown?.frames ?? 0,
-      clipCacheSize: data.clipCacheSize ?? data.breakdown?.clips ?? 0,
       totalSize: data.total ?? 0,
       movies: data.movies || [],
     }
@@ -172,7 +166,6 @@ const loadStats = async () => {
     console.error('Failed to load cache stats:', error)
     stats.value = {
       frameCacheSize: 0,
-      clipCacheSize: 0,
       totalSize: 0,
       movies: [],
     }
@@ -298,7 +291,7 @@ watch(() => props.visible, (visible) => {
 
 .cache-overview {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   margin-bottom: 20px;
 }

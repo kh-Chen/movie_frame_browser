@@ -44,9 +44,9 @@ export const useMovieApi = () => {
     return api.get(`/movies/${id}/keyframe`, { params: { t, dir } })
   }
 
-  const getClipUrl = (id, timestamp) => {
+  const getHlsPlaylistUrl = (id, timestamp) => {
     const t = Math.round(timestamp * 1000) / 1000
-    return `${API_BASE}/movies/${id}/clip?t=${t}`
+    return `${API_BASE}/movies/${id}/hls/playlist.m3u8?t=${t}`
   }
 
   /**
@@ -109,10 +109,6 @@ export const useMovieApi = () => {
     return api.get(`/movies/${id}/frames/cached`)
   }
 
-  const getCachedClips = async (id) => {
-    return api.get(`/movies/${id}/clips`)
-  }
-
   const deleteCachedFrame = async (id, timestamp) => {
     const t = formatFrameTimestamp(timestamp)
     return api.delete(`/movies/${id}/frames/cached/${t}`)
@@ -120,11 +116,6 @@ export const useMovieApi = () => {
 
   const deleteNonKeyframeFrames = async (id) => {
     return api.delete(`/movies/${id}/frames/cached/non-keyframes`)
-  }
-
-  const deleteCachedClip = async (id, timestamp) => {
-    const t = Math.round(timestamp * 1000) / 1000
-    return api.delete(`/movies/${id}/clips/${t}`)
   }
 
   const extractAllKeyframes = async (id) => {
@@ -142,7 +133,7 @@ export const useMovieApi = () => {
     getCoverUrl,
     getFrameUrl,
     getKeyframe,
-    getClipUrl,
+    getHlsPlaylistUrl,
     getTaskStatus,
     browseLocalDirectory,
     getLocalMovies,
@@ -153,10 +144,8 @@ export const useMovieApi = () => {
     getQueueStatus,
     cancelTask,
     getCachedFrames,
-    getCachedClips,
     deleteCachedFrame,
     deleteNonKeyframeFrames,
-    deleteCachedClip,
     extractAllKeyframes,
     getKeyframes,
   }

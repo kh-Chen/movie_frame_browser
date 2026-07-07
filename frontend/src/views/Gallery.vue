@@ -6,7 +6,7 @@
       </button>
       <div class="header-info">
         <h1 class="page-title">{{ movie?.name || '媒体库' }}</h1>
-        <span class="subtitle">已生成的帧与片段</span>
+        <span class="subtitle">已生成的帧</span>
       </div>
     </header>
 
@@ -18,24 +18,13 @@
     <main v-else class="page-content">
       <!-- Tabs -->
       <div class="tab-bar">
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'frames' }"
-          @click="activeTab = 'frames'"
-        >
+        <button class="tab-btn active">
           帧图片 ({{ frames.length }})
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'clips' }"
-          @click="activeTab = 'clips'"
-        >
-          片段 ({{ clips.length }})
         </button>
       </div>
 
       <!-- Frames grid -->
-      <section v-if="activeTab === 'frames'" class="media-section">
+      <section class="media-section">
         <div v-if="nonKeyframeCount > 0" class="section-toolbar">
           <button
             class="bulk-delete-btn"
@@ -85,47 +74,6 @@
         </div>
       </section>
 
-      <!-- Clips grid -->
-      <section v-if="activeTab === 'clips'" class="media-section">
-        <div v-if="clips.length === 0" class="empty-state">
-          <span class="empty-icon">🎬</span>
-          <p>暂无已生成的片段</p>
-          <p class="empty-hint">在浏览页面点击预览可生成片段</p>
-          <button class="action-link" @click="goToBrowse">去浏览电影</button>
-        </div>
-        <div v-else class="media-grid clips-grid">
-          <div
-            v-for="clip in clips"
-            :key="`${clip.timestamp}`"
-            class="media-card clip-card"
-            @click="openClip(clip)"
-          >
-            <div class="clip-thumb">
-              <img
-                :src="buildFrameUrl(clip.timestamp, 320)"
-                :alt="`Clip ${formatClipRange(clip)}`"
-                class="media-thumb"
-                loading="lazy"
-              />
-              <div class="play-overlay">
-                <span class="play-icon">▶</span>
-              </div>
-              <button
-                class="delete-float-btn"
-                title="删除此片段"
-                :disabled="deletingClipTs === clip.timestamp"
-                @click.stop="handleDeleteClip(clip)"
-              >
-                {{ deletingClipTs === clip.timestamp ? '…' : '✕' }}
-              </button>
-            </div>
-            <div class="media-info">
-              <span class="media-time clip-range">{{ formatClipRange(clip) }}</span>
-              <span class="media-size">{{ formatSize(clip.size) }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
     </main>
 
     <!-- Frame lightbox -->
@@ -159,13 +107,6 @@
         </div>
       </Transition>
     </Teleport>
-
-    <ClipPreview
-      :visible="showClip"
-      :movie-id="movieId"
-      :timestamp="selectedClipTimestamp"
-      @close="showClip = false"
-    />
   </div>
 </template>
 
@@ -174,8 +115,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMovieApi } from '../composables/useMovieApi'
 import { DEFAULT_FPS } from '../utils/frameTimestamp'
-import { formatTime, formatTimeShort, formatFileSize } from '../utils/formatTime'
-import ClipPreview from '../components/ClipPreview.vue'
+import { formatTime, formatFileSize } from '../utils/formatTime'
 
 const props = defineProps({
   id: {
@@ -188,24 +128,17 @@ const router = useRouter()
 const {
   getMovie,
   getCachedFrames,
-  getCachedClips,
   getFrameUrl,
   deleteCachedFrame,
   deleteNonKeyframeFrames,
-  deleteCachedClip,
 } = useMovieApi()
 
 const movieId = props.id
 const movie = ref(null)
 const frames = ref([])
-const clips = ref([])
 const isLoading = ref(true)
-const activeTab = ref('frames')
 const selectedFrame = ref(null)
-const showClip = ref(false)
-const selectedClipTimestamp = ref(0)
 const deletingFrameTs = ref(null)
-const deletingClipTs = ref(null)
 const isBulkDeletingFrames = ref(false)
 
 const nonKeyframeCount = computed(() => frames.value.filter((f) => !f.isKeyframe).length)
@@ -222,32 +155,18 @@ const buildFrameUrl = (timestamp, width = 320) => (
 
 const formatSize = (bytes) => formatFileSize(bytes)
 
-const formatClipRange = (clip) => {
-  if (clip.startTime != null && clip.endTime != null) {
-    return `${formatTimeShort(clip.startTime)} ~ ${formatTimeShort(clip.endTime)}`
-  }
-  const seekBack = 1
-  const seekForward = 5
-  const start = Math.max(0, clip.timestamp - seekBack)
-  const end = clip.timestamp + seekForward
-  return `${formatTimeShort(start)} ~ ${formatTimeShort(end)}`
-}
-
 const loadData = async () => {
   isLoading.value = true
   try {
-    const [movieData, framesData, clipsData] = await Promise.all([
+    const [movieData, framesData] = await Promise.all([
       getMovie(movieId),
       getCachedFrames(movieId),
-      getCachedClips(movieId),
     ])
     movie.value = movieData
     frames.value = framesData.frames || []
-    clips.value = clipsData.clips || []
   } catch (error) {
     console.error('Failed to load gallery data:', error)
     frames.value = []
-    clips.value = []
   } finally {
     isLoading.value = false
   }
@@ -255,11 +174,6 @@ const loadData = async () => {
 
 const openFrame = (frame) => {
   selectedFrame.value = frame
-}
-
-const openClip = (clip) => {
-  selectedClipTimestamp.value = clip.timestamp
-  showClip.value = true
 }
 
 const handleDeleteFrame = async (frame, closeLightbox = false) => {
@@ -298,24 +212,6 @@ const handleDeleteAllNonKeyframes = async () => {
     window.alert('批量删除失败，请稍后重试')
   } finally {
     isBulkDeletingFrames.value = false
-  }
-}
-
-const handleDeleteClip = async (clip) => {
-  if (!window.confirm(`确定删除片段 ${formatClipRange(clip)}？`)) return
-
-  deletingClipTs.value = clip.timestamp
-  try {
-    await deleteCachedClip(movieId, clip.timestamp)
-    clips.value = clips.value.filter((c) => c.timestamp !== clip.timestamp)
-    if (showClip.value && selectedClipTimestamp.value === clip.timestamp) {
-      showClip.value = false
-    }
-  } catch (error) {
-    console.error('Failed to delete clip:', error)
-    window.alert('删除失败，请稍后重试')
-  } finally {
-    deletingClipTs.value = null
   }
 }
 

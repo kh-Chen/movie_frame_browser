@@ -26,12 +26,6 @@ const { formatTime, formatFileSize } = require('../utils/timeFormatter');
 const logger = require('../utils/logger');
 const { staticUrl } = require('../utils/staticUrl');
 
-function setClipMetaHeaders(res, meta) {
-  if (!meta) return;
-  res.set('X-Clip-Start', String(meta.startTime));
-  res.set('X-Clip-End', String(meta.endTime));
-}
-
 /**
  * Get all movies
  */
@@ -119,6 +113,7 @@ async function deleteMovie(req, res, next) {
     
     // Remove generated cache only; source video on disk is not deleted
     await storageService.deleteMovieFiles(id);
+    await ffmpegService.deleteKeyframeCacheFromDisk(movie.originalPath);
     
     // Delete movie from database
     await cacheService.deleteMovie(id);
@@ -332,9 +327,10 @@ async function getKeyframe(req, res, next) {
 }
 
 /**
- * Generate or get preview clip (MP4)
+ * Generate HLS playlist (m3u8) for on-demand preview starting near `t`.
+ * Start point snaps to the previous keyframe; playlist covers [start, duration].
  */
-async function getClip(req, res, next) {
+async function getHlsPlaylist(req, res, next) {
   try {
     const { id } = req.params;
     const { t } = req.query;
@@ -365,67 +361,96 @@ async function getClip(req, res, next) {
       });
     }
 
-    const clipPath = storageService.getClipPath(id, timestamp);
-    const exists = await storageService.fileExists(clipPath);
+    const start = await ffmpegService.findKeyframeBefore(movie.originalPath, timestamp);
+    const segDur = config.hls.segmentDuration;
+    const fps = movie.fps || DEFAULT_FPS;
+    const apiPrefix = config.publicPath ? `${config.publicPath}/api` : '/api';
+    const segmentBase = `${apiPrefix}/movies/${id}/hls/segment`;
 
-    if (exists) {
-      const meta = await storageService.readClipMeta(id, timestamp);
-      setClipMetaHeaders(res, meta);
-      res.type('mp4');
-      return res.sendFile(clipPath);
+    // Keyframe-aligned playlist: every segment boundary is a real keyframe,
+    // so each TS segment begins with an IDR frame and hls.js can demux it.
+    // Falls back to fixed-grid playlist if full keyframe probe fails.
+    let playlist;
+    try {
+      playlist = await ffmpegService.buildKeyframeAlignedPlaylist(
+        movie.originalPath, start, movie.duration, segDur, fps, segmentBase
+      );
+    } catch (error) {
+      logger.warn('Keyframe-aligned playlist failed, falling back to fixed grid', {
+        movieId: id, error: error.message,
+      });
+      playlist = ffmpegService.buildHlsPlaylist(start, movie.duration, segDur, segmentBase);
     }
 
-    const covering = await storageService.findCoveringClip(id, timestamp);
-    if (covering) {
-      setClipMetaHeaders(res, covering.meta);
-      res.type('mp4');
-      return res.sendFile(covering.clipPath);
-    }
+    res.type('application/vnd.apple.mpegurl');
+    res.set('Cache-Control', 'no-cache');
+    res.send(playlist);
+  } catch (error) {
+    next(error);
+  }
+}
 
-    const existingTasks = await cacheService.getTasksByMovie(id);
-    const generatingTask = existingTasks.find(
-      (task) => task.type === 'clip_generate' &&
-        Math.abs((task.params.timestamp || 0) - timestamp) < 0.001 &&
-        task.status === 'processing'
-    );
+/**
+ * Stream a single HLS segment (MPEG-TS) on demand. No disk caching.
+ */
+async function getHlsSegment(req, res, next) {
+  try {
+    const { id } = req.params;
+    const startRaw = parseFloat(req.query.start);
+    const durRaw = parseFloat(req.query.dur);
 
-    if (generatingTask) {
-      return res.status(202).json({
-        taskId: generatingTask.taskId,
-        status: 'generating',
-        progress: generatingTask.progress || 0,
-        message: '片段生成中，请稍候',
+    if (isNaN(startRaw) || isNaN(durRaw) || startRaw < 0 || durRaw <= 0) {
+      return res.status(400).json({
+        error: 'INVALID_PARAMS',
+        message: '无效的分片参数 start 或 dur',
+        code: 400,
       });
     }
 
-    const taskId = taskQueue.enqueue({
-      type: 'clip_generate',
-      movieId: id,
-      priority: PRIORITY.HIGH,
-      params: {
-        moviePath: movie.originalPath,
-        timestamp,
-        videoDuration: movie.duration,
-      },
-      execute: async ({ onProgress, params }) => {
-        onProgress(20, '正在截取片段...');
-        const segment = await ffmpegService.generatePreviewClip(
-          params.moviePath,
-          params.timestamp,
-          clipPath,
-          { videoDuration: params.videoDuration }
-        );
-        await storageService.saveClipMeta(id, timestamp, segment);
-        onProgress(100, '片段生成完成');
-      },
+    const movie = await cacheService.getMovie(id);
+    if (!movie) {
+      return res.status(404).json({
+        error: 'MOVIE_NOT_FOUND',
+        message: '电影不存在或已被删除',
+        code: 404,
+      });
+    }
+
+    const start = Math.min(startRaw, movie.duration);
+    const dur = Math.min(durRaw, Math.max(0.1, movie.duration - start));
+
+    try {
+      await fs.access(movie.originalPath);
+    } catch {
+      return res.status(404).json({
+        error: 'SOURCE_NOT_FOUND',
+        message: '源视频文件不存在',
+        code: 404,
+      });
+    }
+
+    const { done, kill } = ffmpegService.generateHlsSegment(
+      movie.originalPath, start, dur, res, { codec: movie.codec }
+    );
+
+    // Use response close (not request close) to detect client abort during streaming.
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        kill();
+      }
     });
 
-    res.status(202).json({
-      taskId,
-      status: 'generating',
-      progress: 0,
-      message: '片段生成中，请稍候',
-    });
+    try {
+      await done;
+    } catch (error) {
+      if (!res.headersSent) {
+        next(error);
+      } else {
+        logger.error('HLS segment stream failed after headers sent', {
+          movieId: id, start, dur, error: error.message,
+        });
+      }
+    }
   } catch (error) {
     next(error);
   }
@@ -598,49 +623,6 @@ async function extractAllKeyframes(req, res, next) {
 }
 
 /**
- * List cached preview clips on disk for a movie
- */
-async function listCachedClips(req, res, next) {
-  try {
-    const { id } = req.params;
-
-    const movie = await cacheService.getMovie(id);
-    if (!movie) {
-      return res.status(404).json({
-        error: 'MOVIE_NOT_FOUND',
-        message: '电影不存在或已被删除',
-        code: 404,
-      });
-    }
-
-    const cached = await storageService.listCachedClips(id);
-    const clips = (await Promise.all(cached.map(async (clip) => {
-      const meta = await storageService.readClipMeta(id, clip.timestamp);
-      if (!meta) return null;
-
-      return {
-        timestamp: clip.timestamp,
-        startTime: meta.startTime,
-        endTime: meta.endTime,
-        duration: meta.duration,
-        url: `/api/movies/${id}/clip?t=${clip.timestamp}`,
-        staticUrl: staticUrl('clips', id, `t${clip.timestamp}.mp4`),
-        size: clip.size,
-        createdAt: clip.createdAt,
-      };
-    }))).filter(Boolean);
-
-    res.json({
-      movieId: id,
-      total: clips.length,
-      clips,
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-/**
  * Delete a single non-keyframe cached frame image
  */
 async function deleteCachedFrame(req, res, next) {
@@ -721,52 +703,6 @@ async function deleteNonKeyframeFrames(req, res, next) {
 }
 
 /**
- * Delete a cached preview clip
- */
-async function deleteCachedClip(req, res, next) {
-  try {
-    const { id, timestamp: timestampParam } = req.params;
-    const timestamp = parseFloat(timestampParam);
-
-    if (!Number.isFinite(timestamp)) {
-      return res.status(400).json({
-        error: 'INVALID_TIMESTAMP',
-        message: '无效的时间戳',
-        code: 400,
-      });
-    }
-
-    const movie = await cacheService.getMovie(id);
-    if (!movie) {
-      return res.status(404).json({
-        error: 'MOVIE_NOT_FOUND',
-        message: '电影不存在或已被删除',
-        code: 404,
-      });
-    }
-
-    const result = await storageService.deleteCachedClip(id, timestamp);
-
-    if (!result.deleted) {
-      return res.status(404).json({
-        error: 'CLIP_NOT_FOUND',
-        message: '片段不存在或已被删除',
-        code: 404,
-      });
-    }
-
-    res.json({
-      message: '片段已删除',
-      movieId: id,
-      timestamp: result.timestamp,
-      freed: result.freed,
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-/**
  * Get cache status
  */
 async function getCacheStatus(req, res, next) {
@@ -786,13 +722,11 @@ async function getCacheStatus(req, res, next) {
       total: cacheSize.total,
       totalFormatted: formatFileSize(cacheSize.total),
       frameCacheSize: cacheSize.frames,
-      clipCacheSize: cacheSize.clips,
       maxSize: config.cache.maxSize,
       usagePercent: ((cacheSize.total / config.cache.maxSize) * 100).toFixed(2),
       breakdown: {
         covers: cacheSize.covers,
         frames: cacheSize.frames,
-        clips: cacheSize.clips,
         temp: cacheSize.temp,
       },
       movies: movieCaches,
@@ -803,7 +737,7 @@ async function getCacheStatus(req, res, next) {
 }
 
 /**
- * Clear frame/clip cache (all or one movie)
+ * Clear frame cache (all or one movie)
  */
 async function clearCache(req, res, next) {
   try {
@@ -1135,12 +1069,11 @@ module.exports = {
   getKeyframe,
   listKeyframes,
   extractAllKeyframes,
-  getClip,
+  getHlsPlaylist,
+  getHlsSegment,
   listCachedFrames,
-  listCachedClips,
   deleteCachedFrame,
   deleteNonKeyframeFrames,
-  deleteCachedClip,
   getCacheStatus,
   clearCache,
   browseLocalDirectory,

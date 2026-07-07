@@ -5,8 +5,10 @@
 
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
-const fs = require('fs').promises;
-const { execFile } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const fsPromises = require('fs').promises;
+const { execFile, spawn } = require('child_process');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
@@ -32,7 +34,6 @@ const defaultOptions = {
 };
 
 const ffmpegTimeoutSec = Math.max(30, Math.ceil(config.ffmpeg.timeout / 1000));
-const clipTimeoutSec = Math.min(ffmpegTimeoutSec, Math.max(10, parseInt(process.env.CLIP_FFMPEG_TIMEOUT_SEC, 10) || 20));
 // fluent-ffmpeg timeout is seconds; internally uses setTimeout(timeout * 1000)
 const MAX_FFMPEG_TIMEOUT_SEC = 2147483;
 
@@ -50,39 +51,419 @@ function roundSeekTime(seconds) {
   return Math.round(seconds * 1000) / 1000;
 }
 
-/** Compute preview segment: back seek + keyframe, forward seek + keyframe. */
-async function computePreviewSegment(videoPath, timestamp, videoDuration = null) {
-  const center = roundSeekTime(timestamp);
-  const seekBack = config.frame.defaultClipSeekBack;
-  const seekForward = config.frame.defaultClipSeekForward;
+function formatHlsSegmentUri(segmentBase, start, dur) {
+  return `${segmentBase}?start=${start}&dur=${dur}`;
+}
 
-  const startTarget = roundSeekTime(Math.max(0, center - seekBack));
-  let endTarget = roundSeekTime(center + seekForward);
-  if (videoDuration != null) {
-    endTarget = roundSeekTime(Math.min(videoDuration, endTarget));
+/** Assemble a VOD media playlist with required TARGETDURATION for hls.js. */
+function finalizeHlsPlaylist(segmentEntries) {
+  const maxDur = Math.max(1, ...segmentEntries.map((entry) => entry.dur));
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    `#EXT-X-TARGETDURATION:${Math.ceil(maxDur)}`,
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+  ];
+
+  for (const { dur, uri } of segmentEntries) {
+    lines.push(`#EXTINF:${dur.toFixed(3)},`);
+    lines.push(uri);
   }
 
-  const startTime = await findKeyframeBefore(videoPath, startTarget);
-  let endTime = await findKeyframeAfter(videoPath, endTarget, videoDuration);
-  if (videoDuration != null) {
-    endTime = roundSeekTime(Math.min(videoDuration, endTime));
-  }
-  if (endTime <= startTime) {
-    endTime = roundSeekTime(Math.min(
-      videoDuration ?? startTime + 0.1,
-      startTime + 0.1
-    ));
+  lines.push('#EXT-X-ENDLIST');
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Build a VOD HLS playlist (m3u8 text) covering [start, videoDuration].
+ * Segments are split at fixed `segDur` boundaries. `segmentBase` should be an
+ * absolute path (e.g. /movie/api/movies/:id/hls/segment) so clients behind a
+ * subpath deploy resolve segment URLs correctly.
+ */
+function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment') {
+  const end = roundSeekTime(videoDuration);
+  let cursor = roundSeekTime(Math.max(0, Math.min(start, end)));
+  const minSeg = 0.1;
+  const segmentEntries = [];
+
+  while (cursor < end - 0.001) {
+    const segEnd = Math.min(end, roundSeekTime(cursor + segDur));
+    const dur = roundSeekTime(Math.max(minSeg, segEnd - cursor));
+    segmentEntries.push({
+      dur,
+      uri: formatHlsSegmentUri(segmentBase, cursor, dur),
+    });
+    cursor = segEnd;
   }
 
-  const duration = Math.max(0.1, roundSeekTime(endTime - startTime));
-  return {
-    startTime,
-    endTime,
-    duration,
-    center,
-    seekBack,
-    seekForward,
+  return finalizeHlsPlaylist(segmentEntries);
+}
+
+/**
+ * In-memory cache of full-video keyframe timestamps per movie.
+ * Keyed by video path (stable per source file, avoids re-probing on each
+ * preview click). Entries are plain objects so they can be GC'd if needed.
+ * @type {Map<string, { times: number[], duration: number, ts: number }>}
+ */
+const keyframeCache = new Map();
+
+const KEYFRAME_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes (in-memory layer)
+
+function getKeyframeCachePath(videoPath) {
+  const hash = crypto.createHash('sha256').update(videoPath).digest('hex').slice(0, 20);
+  return path.join(config.paths.keyframeCache, `${hash}.json`);
+}
+
+async function readKeyframeCacheFromDisk(videoPath, videoDuration) {
+  const cachePath = getKeyframeCachePath(videoPath);
+  try {
+    const raw = await fsPromises.readFile(cachePath, 'utf8');
+    const data = JSON.parse(raw);
+    if (data.videoPath !== videoPath) return null;
+    if (Math.abs((data.duration || 0) - videoDuration) >= 0.5) return null;
+    if (!Array.isArray(data.times) || data.times.length === 0) return null;
+    return data.times;
+  } catch {
+    return null;
+  }
+}
+
+async function writeKeyframeCacheToDisk(videoPath, videoDuration, times) {
+  const cachePath = getKeyframeCachePath(videoPath);
+  await fsPromises.mkdir(path.dirname(cachePath), { recursive: true });
+  await fsPromises.writeFile(cachePath, JSON.stringify({
+    videoPath,
+    duration: videoDuration,
+    times,
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
+async function deleteKeyframeCacheFromDisk(videoPath) {
+  const cachePath = getKeyframeCachePath(videoPath);
+  try {
+    await fsPromises.unlink(cachePath);
+  } catch {
+    // Cache file may not exist.
+  }
+}
+
+/**
+ * Get the sorted list of keyframe timestamps for a video, probing the full
+ * file once and caching the result. Falls back to null on probe failure.
+ * @returns {Promise<number[]|null>}
+ */
+async function getCachedKeyframeTimes(videoPath, videoDuration) {
+  const now = Date.now();
+  const hit = keyframeCache.get(videoPath);
+  if (hit && now - hit.ts < KEYFRAME_CACHE_TTL_MS && Math.abs(hit.duration - videoDuration) < 0.5) {
+    return hit.times;
+  }
+
+  const fromDisk = await readKeyframeCacheFromDisk(videoPath, videoDuration);
+  if (fromDisk) {
+    keyframeCache.set(videoPath, { times: fromDisk, duration: videoDuration, ts: now });
+    logger.debug('Keyframe cache loaded from disk', { videoPath, count: fromDisk.length });
+    return fromDisk;
+  }
+
+  try {
+    const times = await probeAllKeyframeTimes(videoPath, videoDuration);
+    if (times.length === 0) {
+      return null;
+    }
+    await writeKeyframeCacheToDisk(videoPath, videoDuration, times);
+    keyframeCache.set(videoPath, { times, duration: videoDuration, ts: now });
+    logger.info('Keyframe cache built and persisted', { videoPath, count: times.length });
+    return times;
+  } catch (error) {
+    logger.warn('Full keyframe probe failed, will fall back to fixed-grid playlist', {
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+/** Binary search: largest index i where times[i] <= target. Returns -1 if none. */
+function findLastKeyframeAtOrBefore(times, target) {
+  let lo = 0;
+  let hi = times.length - 1;
+  let result = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= target + 0.001) {
+      result = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return result;
+}
+
+/**
+ * Build a VOD HLS playlist whose segment boundaries align with real video
+ * keyframes. Each segment starts at a keyframe timestamp, so
+ * `ffmpeg -ss <start> -c copy -f mpegts` produces a TS that begins with an
+ * IDR keyframe — hls.js can demux it without fatal buffer-append errors.
+ *
+ * Greedy aggregation: starting from the keyframe at or before `startTimestamp`,
+ * accumulate keyframes until the accumulated span reaches `segDur`, then cut
+ * the segment at the next keyframe. This keeps segments roughly `segDur` long
+ * while guaranteeing every segment boundary is a keyframe.
+ *
+ * Falls back to `buildHlsPlaylist` (fixed grid, start-only alignment) when
+ * keyframe probing is unavailable.
+ *
+ * @param {string} videoPath - Source video path (also used as cache key)
+ * @param {number} startTimestamp - Requested preview start (seconds)
+ * @param {number} videoDuration - Total video duration (seconds)
+ * @param {number} segDur - Target segment duration (seconds)
+ * @param {number} [fps] - Frame rate (unused for now, reserved for manifest reuse)
+ * @returns {Promise<string>} m3u8 playlist text
+ */
+async function buildKeyframeAlignedPlaylist(
+  videoPath,
+  startTimestamp,
+  videoDuration,
+  segDur,
+  fps,
+  segmentBase = 'segment'
+) {
+  const times = await getCachedKeyframeTimes(videoPath, videoDuration);
+  const end = roundSeekTime(videoDuration);
+
+  if (!times || times.length === 0) {
+    logger.warn('Keyframe-aligned playlist unavailable, falling back to fixed grid', {
+      videoPath,
+    });
+    return buildHlsPlaylist(startTimestamp, videoDuration, segDur, segmentBase);
+  }
+
+  // Ensure the final boundary equals the video end so the last segment closes
+  // cleanly. Avoid duplicating an end keyframe.
+  const keyframes = times.slice();
+  if (keyframes[keyframes.length - 1] < end - 0.001) {
+    keyframes.push(end);
+  }
+
+  const startIdx = Math.max(0, findLastKeyframeAtOrBefore(keyframes, startTimestamp));
+  const minSeg = 0.1;
+  const targetSeg = Math.max(minSeg, segDur);
+
+  const segmentEntries = [];
+
+  let segStartIdx = startIdx;
+  while (segStartIdx < keyframes.length - 1) {
+    const segStart = roundSeekTime(keyframes[segStartIdx]);
+
+    // Greedily extend until accumulated duration reaches targetSeg, or we hit
+    // the last keyframe.
+    let endIdx = segStartIdx + 1;
+    while (endIdx < keyframes.length - 1 &&
+      keyframes[endIdx] - segStart < targetSeg) {
+      endIdx += 1;
+    }
+
+    const segEnd = roundSeekTime(Math.min(end, keyframes[endIdx]));
+    const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
+
+    segmentEntries.push({
+      dur,
+      uri: formatHlsSegmentUri(segmentBase, segStart, dur),
+    });
+
+    segStartIdx = endIdx;
+  }
+
+  return finalizeHlsPlaylist(segmentEntries);
+}
+
+/**
+ * FFmpeg output options for remuxing a source clip into an HLS MPEG-TS segment.
+ * MP4/MKV H.264/HEVC in copy mode needs bitstream filters for MPEG-TS muxing.
+ */
+function buildHlsOutputOptions(videoCodec, videoPath) {
+  const normalized = (videoCodec || '').toLowerCase();
+  const ext = path.extname(videoPath || '').toLowerCase();
+  const isMp4Like = ['.mp4', '.m4v', '.mov', '.3gp'].includes(ext);
+  const streamMaps = ['-map', '0:v:0', '-map', '0:a?'];
+  // Always transcode audio to AAC ADTS — source tracks (AC3/DTS/AAC-in-MP4) often
+  // break hls.js when copied into transport/container segments.
+  const audioOpts = ['-c:a', 'aac', '-b:a', '128k', '-ac', '2'];
+  const trailerOpts = ['-sn', '-dn'];
+
+  switch (normalized) {
+    case 'h264': {
+      const opts = [...streamMaps];
+      if (isMp4Like) {
+        opts.push('-c:v', 'copy', '-bsf:v', 'h264_mp4toannexb');
+      } else {
+        opts.push('-c:v', 'copy');
+      }
+      return [...opts, ...audioOpts, ...trailerOpts];
+    }
+    case 'hevc':
+    case 'h265': {
+      const opts = [...streamMaps];
+      if (isMp4Like) {
+        opts.push('-c:v', 'copy', '-bsf:v', 'hevc_mp4toannexb');
+      } else {
+        opts.push('-c:v', 'copy');
+      }
+      return [...opts, ...audioOpts, ...trailerOpts];
+    }
+    case 'mpeg2video':
+      return [
+        ...streamMaps,
+        '-c:v', 'copy',
+        ...audioOpts,
+        ...trailerOpts,
+      ];
+    default:
+      return [
+        ...streamMaps,
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        ...audioOpts,
+        ...trailerOpts,
+      ];
+  }
+}
+
+/**
+ * Stream a single HLS segment (fragmented MP4) from the source video to an HTTP
+ * response. fMP4 is fed directly into MSE via hls.js without TS transmuxing.
+ * Headers are sent only after ffmpeg produces the first byte.
+ */
+function generateHlsSegment(videoPath, startTime, duration, res, options = {}) {
+  const start = roundSeekTime(Math.max(0, startTime));
+  const dur = roundSeekTime(Math.max(0.1, duration));
+  const outputOptions = buildHlsOutputOptions(options.codec, videoPath);
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-ss', String(start),
+    '-i', videoPath,
+    '-t', String(dur),
+    ...outputOptions,
+    '-avoid_negative_ts', 'make_zero',
+    '-fflags', '+genpts',
+    '-reset_timestamps', '1',
+    '-f', 'mp4',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset',
+    'pipe:1',
+  ];
+
+  const proc = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let settled = false;
+  let stderr = '';
+  let bytesWritten = 0;
+  let timeoutId = null;
+
+  const clearSegmentTimeout = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
   };
+
+  const finish = (error) => {
+    if (settled) return;
+    settled = true;
+    clearSegmentTimeout();
+    if (error && !res.headersSent && !res.writableEnded) {
+      // Controller will send JSON via next(error).
+      return;
+    }
+    if (!res.writableEnded) {
+      res.end();
+    }
+  };
+
+  timeoutId = setTimeout(() => {
+    logger.error('HLS segment timed out', { videoPath, start, dur });
+    try {
+      proc.kill('SIGKILL');
+    } catch (e) {
+      logger.debug('HLS segment timeout kill failed', { error: e.message });
+    }
+  }, config.hls.segmentTimeoutSec * 1000);
+
+  proc.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    stderr += text;
+    if (stderr.length > 4000) {
+      stderr = stderr.slice(-4000);
+    }
+  });
+
+  proc.stdout.on('data', (chunk) => {
+    bytesWritten += chunk.length;
+    if (!res.headersSent) {
+      res.status(200);
+      res.set({
+        'Content-Type': 'video/mp4',
+        'Cache-Control': 'no-cache',
+      });
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+    }
+    res.write(chunk);
+  });
+
+  let settleFn = null;
+
+  const done = new Promise((resolve, reject) => {
+    settleFn = (err) => {
+      if (settled) return;
+      if (err) {
+        logger.error('HLS segment failed', {
+          videoPath, start, dur, bytesWritten, error: err.message, stderr: stderr.slice(0, 500),
+        });
+        finish(err);
+        reject(err);
+        return;
+      }
+      finish();
+      resolve();
+    };
+
+    proc.on('error', (err) => {
+      settleFn(err);
+    });
+
+    proc.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0 || bytesWritten === 0) {
+        const message = stderr.trim() || `ffmpeg exited with code ${code}`;
+        settleFn(new Error(message));
+        return;
+      }
+      settleFn();
+    });
+  });
+
+  proc.stdout.on('error', (err) => {
+    if (settled || !settleFn) return;
+    settleFn(err);
+  });
+
+  const kill = () => {
+    clearSegmentTimeout();
+    try {
+      proc.kill('SIGKILL');
+    } catch (e) {
+      logger.debug('HLS segment kill failed (already exited)', { error: e.message });
+    }
+  };
+
+  return { done, kill };
 }
 
 /** Probe all keyframe timestamps across the full video (chunked for long files). */
@@ -219,53 +600,6 @@ async function findAdjacentKeyframe(videoPath, timestamp, direction, videoDurati
   }
 }
 
-/** Resolve actual source timeline bounds from a generated clip file. */
-async function resolveClipSegment(_videoPath, clipPath, segment, videoDuration = null) {
-  const { startTime, endTime: requestedEndTime } = segment;
-  const clipInfo = await getVideoInfo(clipPath);
-  let actualEnd = roundSeekTime(startTime + clipInfo.duration);
-  if (videoDuration != null) {
-    actualEnd = roundSeekTime(Math.min(videoDuration, actualEnd));
-  }
-
-  return {
-    startTime,
-    endTime: actualEnd,
-    duration: roundSeekTime(Math.max(0.1, actualEnd - startTime)),
-    requestedStartTime: startTime,
-    requestedEndTime,
-  };
-}
-
-/**
- * Extract a short MP4 clip for browser playback (stream copy only).
- * @returns {Promise<object>} Actual segment bounds in source video timeline
- */
-async function generatePreviewClip(videoPath, timestamp, outputPath, options = {}) {
-  const { videoDuration = null } = options;
-  const segment = await computePreviewSegment(videoPath, timestamp, videoDuration);
-  const { startTime, duration } = segment;
-
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
-
-  await executeFfmpegCommand('Preview clip (copy)', () =>
-    ffmpeg(videoPath, { timeout: clipTimeoutSec })
-      .inputOptions(['-ss', String(startTime)])
-      .outputOptions([
-        '-t', String(duration),
-        '-an',
-        '-sn',
-        '-dn',
-        '-c', 'copy',
-        '-movflags', '+faststart',
-        '-avoid_negative_ts', 'make_zero',
-      ])
-      .output(outputPath)
-  );
-
-  return resolveClipSegment(videoPath, outputPath, segment, videoDuration);
-}
-
 /**
  * Execute an FFmpeg command with logging and error handling
  * @param {string} description - Description of the operation
@@ -363,7 +697,7 @@ async function extractCover(videoPath, outputPath, options = {}) {
   const { timestamp = null, width = 1280, quality = 85 } = options;
   const qScale = Math.max(1, Math.min(31, Math.round(31 * (100 - quality) / 100)));
 
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
 
   return new Promise((resolve, reject) => {
     let command = ffmpeg(videoPath);
@@ -410,7 +744,7 @@ async function extractFrame(videoPath, timestamp, outputPath, options = {}) {
   const { width = config.frame.defaultWidth, quality = config.frame.defaultQuality } = options;
   
   // Ensure output directory exists
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
   
   return executeFfmpegCommand('frame extraction', () => {
     return ffmpeg(videoPath)
@@ -461,10 +795,13 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
     throw new Error('未找到关键帧');
   }
 
+  await writeKeyframeCacheToDisk(videoPath, videoDuration, timestamps);
+  keyframeCache.set(videoPath, { times: timestamps, duration: videoDuration, ts: Date.now() });
+
   const scratchDir = tempDir || path.join(config.paths.temp, `keyframe-${Date.now()}`);
-  await fs.rm(scratchDir, { recursive: true, force: true });
-  await fs.mkdir(scratchDir, { recursive: true });
-  await fs.mkdir(outputDir, { recursive: true });
+  await fsPromises.rm(scratchDir, { recursive: true, force: true });
+  await fsPromises.mkdir(scratchDir, { recursive: true });
+  await fsPromises.mkdir(outputDir, { recursive: true });
 
   const qv = String(Math.max(1, Math.min(31, Math.round(31 * (100 - quality) / 100))));
   const batchTimeoutSec = getBatchKeyframeTimeoutSec(videoDuration);
@@ -510,7 +847,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
         .run();
     });
 
-    const entries = await fs.readdir(scratchDir);
+    const entries = await fsPromises.readdir(scratchDir);
     const batchFiles = entries
       .filter((f) => /^\d+\.jpg$/i.test(f))
       .map((f) => ({
@@ -541,10 +878,10 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
       const srcPath = path.join(scratchDir, batchFiles[i].name);
 
       try {
-        await fs.access(destPath);
-        await fs.unlink(srcPath);
+        await fsPromises.access(destPath);
+        await fsPromises.unlink(srcPath);
       } catch {
-        await fs.rename(srcPath, destPath);
+        await fsPromises.rename(srcPath, destPath);
       }
 
       if (!seenFrameKeys.has(basename)) {
@@ -565,7 +902,7 @@ async function extractAllKeyframesBatch(videoPath, outputDir, options = {}, prog
 
     return { frameIndices: savedFrameIndices, total: savedFrameIndices.length };
   } finally {
-    await fs.rm(scratchDir, { recursive: true, force: true });
+    await fsPromises.rm(scratchDir, { recursive: true, force: true });
   }
 }
 
@@ -583,7 +920,7 @@ async function extractFrameBatch(videoPath, timestamps, outputDir, options = {},
   const { width = config.frame.defaultWidth, quality = config.frame.defaultQuality } = options;
   
   // Ensure output directory exists
-  await fs.mkdir(outputDir, { recursive: true });
+  await fsPromises.mkdir(outputDir, { recursive: true });
   
   const total = timestamps.length;
   let completed = 0;
@@ -659,7 +996,7 @@ async function generateSpriteSheet(videoPath, outputPath, options = {}) {
   const rows = Math.ceil(numFrames / columns);
   
   // Ensure output directory exists
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
   
   return executeFfmpegCommand('sprite sheet generation', () => {
     return ffmpeg(videoPath)
@@ -675,11 +1012,13 @@ module.exports = {
   getVideoInfo,
   extractCover,
   extractFrame,
-  computePreviewSegment,
   probeAllKeyframeTimes,
+  findKeyframeBefore,
   findAdjacentKeyframe,
-  resolveClipSegment,
-  generatePreviewClip,
+  buildHlsPlaylist,
+  buildKeyframeAlignedPlaylist,
+  generateHlsSegment,
+  deleteKeyframeCacheFromDisk,
   extractAllKeyframesBatch,
   extractFrameBatch,
   extractFramesSmart,

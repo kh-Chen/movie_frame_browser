@@ -30,6 +30,8 @@ ensureDir(path.join(STATIC_PATH, 'covers'));
 ensureDir(path.join(STATIC_PATH, 'frames'));
 ensureDir(path.join(STATIC_PATH, 'clips'));
 ensureDir(TEMP_PATH);
+ensureDir(path.join(TEMP_PATH, 'hls'));
+ensureDir(path.join(DATA_PATH, 'keyframe-cache'));
 ensureDir(DATA_PATH);
 
 // Calculate max concurrent ffmpeg processes based on CPU cores
@@ -61,6 +63,8 @@ const config = {
     covers: path.join(STATIC_PATH, 'covers'),
     frames: path.join(STATIC_PATH, 'frames'),
     clips: path.join(STATIC_PATH, 'clips'),
+    hls: path.join(TEMP_PATH, 'hls'),
+    keyframeCache: path.join(DATA_PATH, 'keyframe-cache'),
     movies: path.join(DATA_PATH, 'movies.json'),
     tasks: path.join(DATA_PATH, 'tasks.json'),
   },
@@ -84,9 +88,12 @@ const config = {
     defaultInterval: parseInt(process.env.DEFAULT_FRAME_INTERVAL) || 60,
     defaultWidth: parseInt(process.env.DEFAULT_FRAME_WIDTH) || 1280,
     defaultQuality: parseInt(process.env.DEFAULT_FRAME_QUALITY) || 75,
-    defaultClipSeekBack: parseFloat(process.env.CLIP_SEEK_BACK) || 1,
-    defaultClipSeekForward: parseFloat(process.env.CLIP_SEEK_FORWARD) || 5,
-    defaultClipContinueOffset: parseFloat(process.env.CLIP_CONTINUE_OFFSET) || 1,
+  },
+
+  // HLS dynamic packaging settings (on-demand segment generation, no cache)
+  hls: {
+    segmentDuration: parseFloat(process.env.HLS_SEGMENT_DURATION) || 6,
+    segmentTimeoutSec: Math.max(10, parseInt(process.env.HLS_SEGMENT_TIMEOUT_SEC, 10) || 30),
   },
 
   // Task queue settings

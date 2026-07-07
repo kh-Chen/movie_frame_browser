@@ -12,51 +12,25 @@
     @mouseleave="onPointerUp"
   >
     <div class="frame-container">
-      <!-- Clip preview mode -->
+      <!-- Clip preview mode (HLS) -->
       <template v-if="clipMode">
-        <div v-if="clipLoading" class="frame-placeholder clip-loading">
+        <div v-if="hlsLoading" class="frame-placeholder clip-loading">
           <div class="loading-spinner"></div>
-          <p class="clip-loading-text">{{ clipLoadingText }}</p>
-          <div v-if="clipLoadingProgress > 0" class="clip-progress">
-            <div class="clip-progress-bar">
-              <div class="clip-progress-fill" :style="{ width: clipLoadingProgress + '%' }"></div>
-            </div>
-          </div>
+          <p class="clip-loading-text">正在加载视频...</p>
         </div>
 
         <video
-          v-else-if="clipUrl && !clipError"
           ref="clipVideoRef"
-          :src="clipUrl"
           class="clip-video fade-in"
           controls
           autoplay
           muted
           playsinline
-          @error="emit('clip-error')"
-          @ended="onClipEnded"
         />
 
-        <div
-          v-if="clipEnded && clipUrl && !clipError && !clipLoading"
-          class="clip-ended-overlay"
-        >
-          <button type="button" class="clip-action-btn" @click.stop="replayClip">
-            重播
-          </button>
-          <button
-            v-if="canContinueClip"
-            type="button"
-            class="clip-action-btn clip-action-btn--primary"
-            @click.stop="emit('clip-continue')"
-          >
-            下一段
-          </button>
-        </div>
-
-        <div v-else-if="clipError" class="frame-error">
+        <div v-if="hlsError" class="frame-error">
           <span class="error-icon">⚠️</span>
-          <span>片段加载失败</span>
+          <span>视频加载失败</span>
         </div>
       </template>
 
@@ -89,7 +63,7 @@
       </template>
 
       <div class="time-overlay">
-        <span v-if="clipMode && clipTimeRange" class="time-badge clip-range-badge">{{ clipTimeRange }}</span>
+        <span v-if="clipMode && hlsTimeRange" class="time-badge clip-range-badge">{{ hlsTimeRange }}</span>
         <span v-else class="time-badge">{{ displayTime }}</span>
       </div>
 
@@ -109,6 +83,7 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import { formatTime } from '../utils/formatTime'
+import { useHlsPlayer } from '../composables/useHlsPlayer'
 
 const SWIPE_THRESHOLD_PX = 48
 const TAP_THRESHOLD_PX = 12
@@ -126,45 +101,20 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  clipMode: {
-    type: Boolean,
-    default: false
-  },
-  clipUrl: {
+  movieId: {
     type: String,
     default: null
   },
-  clipLoading: {
-    type: Boolean,
-    default: false
-  },
-  clipLoadingText: {
-    type: String,
-    default: '正在加载片段...'
-  },
-  clipLoadingProgress: {
-    type: Number,
-    default: 0
-  },
-  clipError: {
-    type: Boolean,
-    default: false
-  },
-  clipTimeRange: {
-    type: String,
-    default: ''
-  },
-  canContinueClip: {
+  clipMode: {
     type: Boolean,
     default: false
   }
 })
 
-const emit = defineEmits(['click', 'step', 'exit-clip', 'clip-error', 'clip-ended', 'clip-continue'])
+const emit = defineEmits(['click', 'step', 'exit-clip'])
 
 const frameImg = ref(null)
 const clipVideoRef = ref(null)
-const clipEnded = ref(false)
 const currentSrc = ref(null)
 const imageLoaded = ref(false)
 const hasError = ref(false)
@@ -173,6 +123,14 @@ let startX = 0
 let startY = 0
 let pointerActive = false
 let gestureMoved = false
+
+const {
+  isLoading: hlsLoading,
+  hasError: hlsError,
+  timeRange: hlsTimeRange,
+  attachTo: attachHls,
+  destroy: destroyHls,
+} = useHlsPlayer(() => props.movieId)
 
 const currentTimestamp = computed(() => props.timestamp)
 const displayTime = computed(() => formatTime(props.timestamp))
@@ -187,35 +145,17 @@ watch(() => props.src, (newSrc) => {
   }
 }, { immediate: true })
 
-watch(() => props.clipUrl, () => {
-  clipEnded.value = false
-})
-
 watch(
-  () => [props.clipLoading, props.clipUrl, props.clipMode],
-  ([loading, url, mode]) => {
-    if (!loading && url && mode) {
-      nextTick(() => playClipVideo())
+  () => [props.clipMode, props.timestamp, props.movieId],
+  ([mode]) => {
+    if (mode && props.movieId) {
+      nextTick(() => attachHls(clipVideoRef.value, props.timestamp))
+    } else {
+      destroyHls()
     }
-  }
+  },
+  { flush: 'post' }
 )
-
-const playClipVideo = () => {
-  const video = clipVideoRef.value
-  if (!video) return
-  video.currentTime = 0
-  video.play().catch(() => {})
-}
-
-const onClipEnded = () => {
-  clipEnded.value = true
-  emit('clip-ended')
-}
-
-const replayClip = () => {
-  clipEnded.value = false
-  playClipVideo()
-}
 
 const recordStart = (clientX, clientY) => {
   startX = clientX
@@ -449,6 +389,7 @@ const handleClick = () => {
   justify-content: center;
   background: linear-gradient(135deg, var(--bg-secondary), var(--bg-primary));
   animation: pulse 2s ease-in-out infinite;
+  z-index: 1;
 }
 
 @keyframes pulse {

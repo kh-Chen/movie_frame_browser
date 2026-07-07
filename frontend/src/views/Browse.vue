@@ -33,19 +33,10 @@
           :src="currentFrameUrl"
           :timestamp="currentTimestamp"
           :is-loading="isFrameLoading(currentTimestamp, movie?.fps, movie?.duration)"
+          :movie-id="movieId"
           :clip-mode="isClipMode"
-          :clip-url="clipUrl"
-          :clip-loading="clipLoading"
-          :clip-loading-text="clipLoadingText"
-          :clip-loading-progress="clipLoadingProgress"
-          :clip-error="clipHasError"
-          :clip-time-range="clipTimeRange"
-          :can-continue-clip="canContinueClip"
           @step="stepFrame"
           @exit-clip="stopClipPreview"
-          @clip-error="markClipError"
-          @clip-ended="handleClipEnded"
-          @clip-continue="continueClipSegment"
         />
       </section>
 
@@ -241,7 +232,6 @@ import FrameDisplay from '../components/FrameDisplay.vue'
 import Timeline from '../components/Timeline.vue'
 import LoadingOverlay from '../components/LoadingOverlay.vue'
 import KeyframeBrowser from '../components/KeyframeBrowser.vue'
-import { useClipLoader } from '../composables/useClipLoader'
 
 const props = defineProps({
   id: {
@@ -263,20 +253,6 @@ const isLoading = ref(true)
 const currentTimestamp = ref(0)
 const isClipMode = ref(false)
 
-const {
-  isLoading: clipLoading,
-  loadingProgress: clipLoadingProgress,
-  loadingText: clipLoadingText,
-  clipUrl,
-  hasError: clipHasError,
-  timeRange: clipTimeRange,
-  getNextTimestamp,
-  loadClip,
-  preloadNextClip,
-  continueToNextClip,
-  reset: resetClip,
-  markError: markClipError,
-} = useClipLoader(movieId.value)
 const showInfo = ref(false)
 const showKeyframeBrowser = ref(false)
 const showKeyframeUnavailable = ref(false)
@@ -302,11 +278,6 @@ const progressText = computed(() => {
   if (!movie.value) return ''
   const percent = Math.round((currentTimestamp.value / movie.value.duration) * 100)
   return `${formatTimeShort(currentTimestamp.value)} / ${formatTimeShort(movie.value.duration)} (${percent}%)`
-})
-
-const canContinueClip = computed(() => {
-  if (!movie.value) return false
-  return getNextTimestamp(movie.value.duration) != null
 })
 
 const keyframesStatusText = computed(() => {
@@ -344,7 +315,6 @@ const loadMovie = async () => {
 const stopClipPreview = () => {
   if (!isClipMode.value) return
   isClipMode.value = false
-  resetClip()
 }
 
 const seekBy = (deltaSec) => {
@@ -397,25 +367,12 @@ const handleKeydown = (event) => {
   }
 }
 
-const toggleClipPreview = async () => {
+const toggleClipPreview = () => {
   if (isClipMode.value) {
     stopClipPreview()
     return
   }
   isClipMode.value = true
-  await loadClip(currentTimestamp.value)
-}
-
-const handleClipEnded = () => {
-  if (!movie.value || !canContinueClip.value) return
-  preloadNextClip(movie.value.duration)
-}
-
-const continueClipSegment = async () => {
-  if (!movie.value) return
-  const nextTs = await continueToNextClip(movie.value.duration)
-  if (nextTs == null) return
-  currentTimestamp.value = nextTs
 }
 
 // Go to gallery
@@ -524,7 +481,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  resetClip()
   window.removeEventListener('popstate', handlePopState)
   window.removeEventListener('keydown', handleKeydown)
 })

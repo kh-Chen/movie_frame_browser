@@ -84,36 +84,6 @@ async function readKeyframesManifest(movieId) {
 }
 
 /**
- * Get preview clip path (MP4, browser-playable)
- * @param {string} movieId
- * @param {number} timestamp - Center timestamp
- */
-function getClipPath(movieId, timestamp) {
-  const ts = Math.round(timestamp * 1000) / 1000;
-  const movieClipDir = path.join(config.paths.clips, movieId);
-  return path.join(movieClipDir, `t${ts}.mp4`);
-}
-
-function getClipMetaPath(movieId, timestamp) {
-  return getClipPath(movieId, timestamp).replace(/\.mp4$/, '.json');
-}
-
-async function saveClipMeta(movieId, timestamp, meta) {
-  const metaPath = getClipMetaPath(movieId, timestamp);
-  await fs.writeFile(metaPath, JSON.stringify(meta));
-}
-
-async function readClipMeta(movieId, timestamp) {
-  const metaPath = getClipMetaPath(movieId, timestamp);
-  try {
-    const data = await fs.readFile(metaPath, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Get temporary file path
  * @param {string} taskId - Task ID
  * @param {string} filename - Filename
@@ -131,8 +101,9 @@ async function ensureDirectories() {
   const dirs = [
     config.paths.covers,
     config.paths.frames,
-    config.paths.clips,
     config.paths.temp,
+    config.paths.hls,
+    config.paths.keyframeCache,
     path.join(config.paths.data, 'logs'),
   ];
   
@@ -150,7 +121,6 @@ async function ensureDirectories() {
 async function deleteMovieFiles(movieId) {
   const dirs = [
     path.join(config.paths.frames, movieId),
-    path.join(config.paths.clips, movieId),
     path.join(config.paths.temp, movieId),
   ];
 
@@ -188,7 +158,6 @@ async function getCacheSize() {
     total: 0,
     covers: 0,
     frames: 0,
-    clips: 0,
     temp: 0,
   };
   
@@ -215,9 +184,8 @@ async function getCacheSize() {
   
   result.covers = await calculateDirSize(config.paths.covers);
   result.frames = await calculateDirSize(config.paths.frames);
-  result.clips = await calculateDirSize(config.paths.clips);
   result.temp = await calculateDirSize(config.paths.temp);
-  result.total = result.covers + result.frames + result.clips + result.temp;
+  result.total = result.covers + result.frames + result.temp;
   
   return result;
 }
@@ -278,7 +246,6 @@ async function cleanupCache(targetSize) {
   const dirs = [
     path.join(config.paths.temp),
     path.join(config.paths.frames),
-    path.join(config.paths.clips),
     config.paths.covers,
   ];
   
@@ -349,7 +316,6 @@ async function getMovieCacheSize(movieId) {
   let size = 0;
   const dirs = [
     path.join(config.paths.frames, movieId),
-    path.join(config.paths.clips, movieId),
   ];
 
   const calculateDirSize = async (dir) => {
@@ -386,7 +352,6 @@ async function getMovieCacheSize(movieId) {
 async function deleteMovieCache(movieId) {
   const dirs = [
     path.join(config.paths.frames, movieId),
-    path.join(config.paths.clips, movieId),
     path.join(config.paths.temp, movieId),
   ];
 
@@ -440,43 +405,6 @@ async function listCachedFrames(movieId, fps) {
   const frames = Array.from(frameMap.values());
   frames.sort((a, b) => a.frameIndex - b.frameIndex);
   return frames;
-}
-
-/**
- * List cached preview clips for a movie
- * @param {string} movieId
- * @returns {Promise<Array<{timestamp: number, size: number, createdAt: string}>>}
- */
-async function listCachedClips(movieId) {
-  const dir = path.join(config.paths.clips, movieId);
-  const clips = [];
-  const clipPattern = /^t([\d.]+)\.mp4$/;
-
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const match = entry.name.match(clipPattern);
-      if (!match) continue;
-
-      const timestamp = parseFloat(match[1]);
-      const fullPath = path.join(dir, entry.name);
-      const stat = await fs.stat(fullPath);
-
-      clips.push({
-        timestamp,
-        size: stat.size,
-        createdAt: stat.birthtime.toISOString(),
-      });
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      logger.warn(`Failed to list cached clips: ${dir}`, { error: error.message });
-    }
-  }
-
-  clips.sort((a, b) => a.timestamp - b.timestamp);
-  return clips;
 }
 
 /**
@@ -534,66 +462,6 @@ async function deleteAllNonKeyframeFrames(movieId) {
 }
 
 /**
- * Delete a cached preview clip and its metadata sidecar.
- * @returns {Promise<{ deleted: boolean, freed: number, timestamp: number }>}
- */
-async function deleteCachedClip(movieId, timestamp) {
-  const clipPath = getClipPath(movieId, timestamp);
-  const metaPath = getClipMetaPath(movieId, timestamp);
-  let freed = 0;
-  let deleted = false;
-
-  for (const filePath of [clipPath, metaPath]) {
-    try {
-      const stat = await fs.stat(filePath);
-      await fs.unlink(filePath);
-      freed += stat.size;
-      deleted = true;
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        throw error;
-      }
-    }
-  }
-
-  return { deleted, freed, timestamp };
-}
-
-/**
- * Find a cached clip whose segment covers the requested timestamp.
- * When multiple clips cover the point, prefer the one whose center is closest.
- * @param {string} movieId
- * @param {number} requestedTime - Timestamp in seconds
- * @returns {Promise<{timestamp: number, clipPath: string, meta: object}|null>}
- */
-async function findCoveringClip(movieId, requestedTime) {
-  const clips = await listCachedClips(movieId);
-  let best = null;
-  let bestDistance = Infinity;
-
-  for (const clip of clips) {
-    const meta = await readClipMeta(movieId, clip.timestamp);
-    if (!meta || meta.startTime == null || meta.endTime == null) continue;
-
-    if (requestedTime < meta.startTime - 0.001 || requestedTime > meta.endTime + 0.001) {
-      continue;
-    }
-
-    const distance = Math.abs(clip.timestamp - requestedTime);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = {
-        timestamp: clip.timestamp,
-        clipPath: getClipPath(movieId, clip.timestamp),
-        meta,
-      };
-    }
-  }
-
-  return best;
-}
-
-/**
  * Check if a file exists
  * @param {string} filePath - File path
  * @returns {Promise<boolean>}
@@ -629,12 +497,8 @@ module.exports = {
   getKeyframesManifestPath,
   saveKeyframesManifest,
   readKeyframesManifest,
-  getClipPath,
-  getClipMetaPath,
-  saveClipMeta,
-  readClipMeta,
   getTempPath,
-  
+
   // Directory operations
   ensureDirectories,
   deleteMovieFiles,
@@ -643,14 +507,11 @@ module.exports = {
   getCacheSize,
   cleanupCache,
   cleanupTempFiles,
-  
+
   // File operations
   fileExists,
   getFileStats,
   listCachedFrames,
-  listCachedClips,
   deleteNonKeyframeFrame,
   deleteAllNonKeyframeFrames,
-  deleteCachedClip,
-  findCoveringClip,
 };

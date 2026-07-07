@@ -128,29 +128,29 @@ CPU_LOAD_THRESHOLD = 0.8  // 负载过高时暂停入队
 
 ---
 
-## 三、片段预览策略
+## 三、片段预览策略（HLS 动态打包）
 
 ### 3.1 视频信息获取
 
 入库与按需处理均通过 `ffprobe` 获取时长、分辨率、编码等元数据。
 
-### 3.2 片段生成参数
+### 3.2 HLS 预览参数
 
 | 参数 | 默认值 | 说明 |
 |-----|-------|------|
-| `CLIP_SEEK_BACK` | 1 | 中心时间戳向前 seek |
-| `CLIP_SEEK_FORWARD` | 5 | 中心时间戳向后 seek |
-| `CLIP_CONTINUE_OFFSET` | 1 | 续播下一段时的起始偏移 |
-| 对齐方式 | 关键帧 | ffprobe 探测最近关键帧作为起止点 |
+| `HLS_SEGMENT_DURATION` | 6 | 目标分片时长（秒），分片边界对齐关键帧 |
+| `HLS_SEGMENT_TIMEOUT_SEC` | 30 | ffmpeg 分片生成超时 |
 
-片段生成使用 H.264 MP4，比 GIF 生成更快、体积更小。前端 `Browse.vue` 支持内联预览与续播下一段。
+预览采用 HLS 动态打包：`GET /api/movies/:id/hls/playlist.m3u8?t=` 返回关键帧对齐的 VOD playlist，`GET /api/movies/:id/hls/segment?start=&dur=` 用 ffmpeg `-c copy -f mpegts` 流式输出 TS 分片，不写磁盘。前端通过 hls.js 持续播放到关闭。
+
+旧的 MP4 切片预览（`/api/movies/:id/clip`）已废弃。
 
 ### 3.3 生成流程
 
-1. `GET /api/movies/:id/clip?t=` 检查磁盘缓存
-2. 命中 → 直接返回 MP4（含 `X-Clip-Start` / `X-Clip-End` 响应头）
-3. 未命中 → 入队 `clip_generate` 任务，返回 202 + `taskId`
-4. 客户端轮询 `GET /api/tasks/:taskId` 直至完成，再请求 clip URL
+1. 前端请求 `GET /api/movies/:id/hls/playlist.m3u8?t=<timestamp>`
+2. 后端 ffprobe 探测全片关键帧（首次探测后内存缓存 30 分钟），贪心聚合成分片
+3. 返回 m3u8 playlist，每个 `segment?start=<keyframe>&dur=<dur>` 的 start 为关键帧时间戳
+4. hls.js 逐片请求 `GET /api/movies/:id/hls/segment?start=&dur=`，后端流式输出 MPEG-TS
 
 ---
 

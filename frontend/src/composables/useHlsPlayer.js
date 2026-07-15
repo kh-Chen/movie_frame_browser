@@ -21,6 +21,7 @@ export function useHlsPlayer(getMovieId) {
   let hls = null
   let currentVideo = null
   let attachToken = 0
+  let mediaRecoveries = 0
 
   const resolveMovieId = () => (
     typeof getMovieId === 'function' ? getMovieId() : getMovieId
@@ -49,6 +50,7 @@ export function useHlsPlayer(getMovieId) {
     destroy()
 
     const token = ++attachToken
+    mediaRecoveries = 0
     const movieId = resolveMovieId()
     if (!movieId) {
       onError(token)
@@ -102,7 +104,10 @@ export function useHlsPlayer(getMovieId) {
 
         console.error('HLS fatal error:', data.type, data.details, data)
 
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        // recoverMediaError() resets the decoder and often seeks backward.
+        // Allow one recovery per attach; repeated recoveries look like progress rewind.
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 1) {
+          mediaRecoveries += 1
           hls.recoverMediaError()
           return
         }

@@ -391,18 +391,32 @@ async function getHlsPlaylist(req, res, next) {
 }
 
 /**
- * Stream a single HLS segment (MPEG-TS) on demand. No disk caching.
+ * Stream a single HLS segment (fMP4) on demand. No disk caching.
+ * Query: start & end (exclusive), or legacy start & dur.
+ * Optional enc=1 forces video re-encode (fixed-grid fallback).
  */
 async function getHlsSegment(req, res, next) {
   try {
     const { id } = req.params;
     const startRaw = parseFloat(req.query.start);
+    const endRaw = parseFloat(req.query.end);
     const durRaw = parseFloat(req.query.dur);
+    const forceEncode = req.query.enc === '1' || req.query.enc === 'true';
 
-    if (isNaN(startRaw) || isNaN(durRaw) || startRaw < 0 || durRaw <= 0) {
+    if (isNaN(startRaw) || startRaw < 0) {
       return res.status(400).json({
         error: 'INVALID_PARAMS',
-        message: '无效的分片参数 start 或 dur',
+        message: '无效的分片参数 start',
+        code: 400,
+      });
+    }
+
+    const hasEnd = !isNaN(endRaw) && endRaw > startRaw;
+    const hasDur = !isNaN(durRaw) && durRaw > 0;
+    if (!hasEnd && !hasDur) {
+      return res.status(400).json({
+        error: 'INVALID_PARAMS',
+        message: '无效的分片参数 end 或 dur',
         code: 400,
       });
     }
@@ -417,7 +431,17 @@ async function getHlsSegment(req, res, next) {
     }
 
     const start = Math.min(startRaw, movie.duration);
-    const dur = Math.min(durRaw, Math.max(0.1, movie.duration - start));
+    const end = hasEnd
+      ? Math.min(endRaw, movie.duration)
+      : Math.min(start + durRaw, movie.duration);
+
+    if (end <= start) {
+      return res.status(400).json({
+        error: 'INVALID_PARAMS',
+        message: '分片 end 必须大于 start',
+        code: 400,
+      });
+    }
 
     try {
       await fs.access(movie.originalPath);
@@ -430,7 +454,7 @@ async function getHlsSegment(req, res, next) {
     }
 
     const { done, kill } = ffmpegService.generateHlsSegment(
-      movie.originalPath, start, dur, res, { codec: movie.codec }
+      movie.originalPath, start, end, res, { codec: movie.codec, forceEncode }
     );
 
     // Use response close (not request close) to detect client abort during streaming.
@@ -447,7 +471,7 @@ async function getHlsSegment(req, res, next) {
         next(error);
       } else {
         logger.error('HLS segment stream failed after headers sent', {
-          movieId: id, start, dur, error: error.message,
+          movieId: id, start, end, error: error.message,
         });
       }
     }

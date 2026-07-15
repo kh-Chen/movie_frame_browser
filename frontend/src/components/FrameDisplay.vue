@@ -145,11 +145,18 @@ watch(() => props.src, (newSrc) => {
   }
 }, { immediate: true })
 
+// Re-attach only when entering clip mode or switching movie. Do not restart
+// on timestamp ticks while already playing — that resets video.currentTime to 0.
 watch(
-  () => [props.clipMode, props.timestamp, props.movieId],
-  ([mode]) => {
+  () => [props.clipMode, props.movieId],
+  ([mode], prev) => {
     if (mode && props.movieId) {
-      nextTick(() => attachHls(clipVideoRef.value, props.timestamp))
+      const [prevMode, prevMovieId] = prev || []
+      const enteredClip = !prevMode
+      const movieChanged = props.movieId !== prevMovieId
+      if (enteredClip || movieChanged) {
+        nextTick(() => attachHls(clipVideoRef.value, props.timestamp))
+      }
     } else {
       destroyHls()
     }

@@ -51,11 +51,32 @@ function roundSeekTime(seconds) {
   return Math.round(seconds * 1000) / 1000;
 }
 
-function formatHlsSegmentUri(segmentBase, start, dur) {
-  return `${segmentBase}?start=${start}&dur=${dur}`;
+/**
+ * Segment URI uses exclusive `end` (next boundary / next keyframe).
+ * Players advance by EXTINF = end - start; ffmpeg must not emit media past `end`,
+ * otherwise consecutive segments share frames and playback flashbacks.
+ */
+function formatHlsSegmentUri(segmentBase, start, end, options = {}) {
+  let uri = `${segmentBase}?start=${start}&end=${end}`;
+  if (options.forceEncode) {
+    uri += '&enc=1';
+  }
+  return uri;
 }
 
-/** Assemble a VOD media playlist with required TARGETDURATION for hls.js. */
+/** Guard so stream-copy demux stops strictly before the next segment's keyframe. */
+const SEGMENT_END_EPS_SEC = 0.001;
+
+/**
+ * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
+ *
+ * Each segment is independently remuxed with -reset_timestamps 1 (needed so
+ * copied video PTS and re-encoded AAC both start at 0). Without an explicit
+ * discontinuity between segments, players treat the replay of PTS≈0 as a
+ * backward jump on the media timeline — native progress bar "rewinds" at
+ * every segment boundary. Mark each boundary so hls.js/Safari adjust
+ * timestampOffset instead.
+ */
 function finalizeHlsPlaylist(segmentEntries) {
   const maxDur = Math.max(1, ...segmentEntries.map((entry) => entry.dur));
   const lines = [
@@ -67,10 +88,13 @@ function finalizeHlsPlaylist(segmentEntries) {
     '#EXT-X-INDEPENDENT-SEGMENTS',
   ];
 
-  for (const { dur, uri } of segmentEntries) {
+  segmentEntries.forEach(({ dur, uri }, index) => {
+    if (index > 0) {
+      lines.push('#EXT-X-DISCONTINUITY');
+    }
     lines.push(`#EXTINF:${dur.toFixed(3)},`);
     lines.push(uri);
-  }
+  });
 
   lines.push('#EXT-X-ENDLIST');
   return `${lines.join('\n')}\n`;
@@ -78,9 +102,10 @@ function finalizeHlsPlaylist(segmentEntries) {
 
 /**
  * Build a VOD HLS playlist (m3u8 text) covering [start, videoDuration].
- * Segments are split at fixed `segDur` boundaries. `segmentBase` should be an
- * absolute path (e.g. /movie/api/movies/:id/hls/segment) so clients behind a
- * subpath deploy resolve segment URLs correctly.
+ * Fixed `segDur` grid — last resort when keyframe probing fails.
+ *
+ * Mid-GOP starts cannot be cut cleanly with `-c:v copy` (ffmpeg seeks back to
+ * the previous keyframe → heavy overlap / flashback). Force encode each segment.
  */
 function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment') {
   const end = roundSeekTime(videoDuration);
@@ -93,7 +118,7 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
     const dur = roundSeekTime(Math.max(minSeg, segEnd - cursor));
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, cursor, dur),
+      uri: formatHlsSegmentUri(segmentBase, cursor, segEnd, { forceEncode: true }),
     });
     cursor = segEnd;
   }
@@ -260,7 +285,8 @@ async function buildKeyframeAlignedPlaylist(
     const segStart = roundSeekTime(keyframes[segStartIdx]);
 
     // Greedily extend until accumulated duration reaches targetSeg, or we hit
-    // the last keyframe.
+    // the last keyframe. Cut at keyframe[endIdx] — exclusive end of this segment
+    // and start of the next (playlist ranges abut; no declared overlap).
     let endIdx = segStartIdx + 1;
     while (endIdx < keyframes.length - 1 &&
       keyframes[endIdx] - segStart < targetSeg) {
@@ -272,7 +298,7 @@ async function buildKeyframeAlignedPlaylist(
 
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, segStart, dur),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd),
     });
 
     segStartIdx = endIdx;
@@ -282,18 +308,30 @@ async function buildKeyframeAlignedPlaylist(
 }
 
 /**
- * FFmpeg output options for remuxing a source clip into an HLS MPEG-TS segment.
- * MP4/MKV H.264/HEVC in copy mode needs bitstream filters for MPEG-TS muxing.
+ * FFmpeg output options for remuxing a source clip into an HLS fMP4 segment.
+ * MP4/MKV H.264/HEVC in copy mode needs bitstream filters for annex-B on some paths.
  */
-function buildHlsOutputOptions(videoCodec, videoPath) {
-  const normalized = (videoCodec || '').toLowerCase();
-  const ext = path.extname(videoPath || '').toLowerCase();
-  const isMp4Like = ['.mp4', '.m4v', '.mov', '.3gp'].includes(ext);
+function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
   const streamMaps = ['-map', '0:v:0', '-map', '0:a?'];
-  // Always transcode audio to AAC ADTS — source tracks (AC3/DTS/AAC-in-MP4) often
+  // Always transcode audio to AAC — source tracks (AC3/DTS/AAC-in-MP4) often
   // break hls.js when copied into transport/container segments.
   const audioOpts = ['-c:a', 'aac', '-b:a', '128k', '-ac', '2'];
   const trailerOpts = ['-sn', '-dn'];
+
+  if (options.forceEncode) {
+    return [
+      ...streamMaps,
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      ...audioOpts,
+      ...trailerOpts,
+    ];
+  }
+
+  const normalized = (videoCodec || '').toLowerCase();
+  const ext = path.extname(videoPath || '').toLowerCase();
+  const isMp4Like = ['.mp4', '.m4v', '.mov', '.3gp'].includes(ext);
 
   switch (normalized) {
     case 'h264': {
@@ -338,19 +376,34 @@ function buildHlsOutputOptions(videoCodec, videoPath) {
  * Stream a single HLS segment (fragmented MP4) from the source video to an HTTP
  * response. fMP4 is fed directly into MSE via hls.js without TS transmuxing.
  * Headers are sent only after ffmpeg produces the first byte.
+ *
+ * Uses input `-ss` / `-to` with an exclusive end slightly before the next
+ * segment boundary so stream-copy does not emit the next keyframe (which would
+ * overlap the following segment and cause a visual flashback).
+ *
+ * @param {number} startTime - Segment start (seconds, ideally a keyframe)
+ * @param {number} endTime - Exclusive end (seconds, next keyframe / boundary)
  */
-function generateHlsSegment(videoPath, startTime, duration, res, options = {}) {
+function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   const start = roundSeekTime(Math.max(0, startTime));
-  const dur = roundSeekTime(Math.max(0.1, duration));
-  const outputOptions = buildHlsOutputOptions(options.codec, videoPath);
+  const endExclusive = roundSeekTime(Math.max(start + 0.1, endTime));
+  // Stop demux slightly before the next segment's start keyframe.
+  const cutTo = roundSeekTime(Math.max(start + 0.05, endExclusive - SEGMENT_END_EPS_SEC));
+  const mediaDur = roundSeekTime(Math.max(0.05, cutTo - start));
+  const outputOptions = buildHlsOutputOptions(options.codec, videoPath, {
+    forceEncode: Boolean(options.forceEncode),
+  });
 
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
+    // Both as input options: absolute file timeline, exclusive of next boundary.
     '-ss', String(start),
+    '-to', String(cutTo),
     '-i', videoPath,
-    '-t', String(dur),
     ...outputOptions,
+    // Clamp remux/encode so AAC padding cannot stretch past EXTINF into the next segment.
+    '-t', String(mediaDur),
     '-avoid_negative_ts', 'make_zero',
     '-fflags', '+genpts',
     '-reset_timestamps', '1',
@@ -386,7 +439,7 @@ function generateHlsSegment(videoPath, startTime, duration, res, options = {}) {
   };
 
   timeoutId = setTimeout(() => {
-    logger.error('HLS segment timed out', { videoPath, start, dur });
+    logger.error('HLS segment timed out', { videoPath, start, end: cutTo });
     try {
       proc.kill('SIGKILL');
     } catch (e) {
@@ -424,7 +477,7 @@ function generateHlsSegment(videoPath, startTime, duration, res, options = {}) {
       if (settled) return;
       if (err) {
         logger.error('HLS segment failed', {
-          videoPath, start, dur, bytesWritten, error: err.message, stderr: stderr.slice(0, 500),
+          videoPath, start, end: cutTo, bytesWritten, error: err.message, stderr: stderr.slice(0, 500),
         });
         finish(err);
         reject(err);

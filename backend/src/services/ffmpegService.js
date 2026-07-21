@@ -61,6 +61,9 @@ function formatHlsSegmentUri(segmentBase, start, end, options = {}) {
   if (options.forceEncode) {
     uri += '&enc=1';
   }
+  if (Number.isFinite(options.offset)) {
+    uri += `&offset=${options.offset}`;
+  }
   return uri;
 }
 
@@ -84,9 +87,9 @@ const SEGMENT_START_GAP = 0.1;
 /**
  * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
  *
- * Each segment is independently remuxed with -reset_timestamps 1. The
- * discontinuity tag signals hls.js to adjust timestampOffset per segment
- * so reset-to-zero PTS maps to the correct playlist timeline position.
+ * All segments share a continuous PTS timeline (via -output_ts_offset in
+ * each segment URI), so hls.js can preload aggressively without
+ * EXT-X-DISCONTINUITY stalls. No discontinuity tags needed.
  */
 function finalizeHlsPlaylist(segmentEntries) {
   const maxDur = Math.max(1, ...segmentEntries.map((entry) => entry.dur));
@@ -99,10 +102,7 @@ function finalizeHlsPlaylist(segmentEntries) {
     '#EXT-X-INDEPENDENT-SEGMENTS',
   ];
 
-  segmentEntries.forEach(({ dur, uri }, index) => {
-    if (index > 0) {
-      lines.push('#EXT-X-DISCONTINUITY');
-    }
+  segmentEntries.forEach(({ dur, uri }) => {
     lines.push(`#EXTINF:${dur.toFixed(3)},`);
     lines.push(uri);
   });
@@ -124,6 +124,7 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
   const minSeg = 0.1;
   const segmentEntries = [];
 
+  let cumulativeTs = 0;
   while (cursor < end - 0.001) {
     const rawSegEnd = Math.min(end, roundSeekTime(cursor + segDur));
     const segStart = roundSeekTime(cursor + SEGMENT_START_GAP);
@@ -131,8 +132,9 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
     const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { forceEncode: true }),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { forceEncode: true, offset: cumulativeTs }),
     });
+    cumulativeTs += dur;
     cursor = rawSegEnd;
   }
 
@@ -294,6 +296,7 @@ async function buildKeyframeAlignedPlaylist(
   const segmentEntries = [];
 
   let segStartIdx = startIdx;
+  let cumulativeTs = 0;
   while (segStartIdx < keyframes.length - 1) {
     const segStart = roundSeekTime(keyframes[segStartIdx] + SEGMENT_START_GAP);
 
@@ -312,9 +315,10 @@ async function buildKeyframeAlignedPlaylist(
 
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { offset: cumulativeTs }),
     });
 
+    cumulativeTs += dur;
     segStartIdx = endIdx;
   }
 
@@ -422,9 +426,15 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
     '-avoid_negative_ts', 'make_zero',
     '-fflags', '+genpts',
     '-reset_timestamps', '1',
-    '-f', 'mpegts',
-    'pipe:1',
   ];
+
+  // Continuous PTS across segments: shift output timestamps so hls.js can
+  // preload without EXT-X-DISCONTINUITY stalls.
+  if (options.outputTsOffset > 0) {
+    args.push('-output_ts_offset', String(options.outputTsOffset));
+  }
+
+  args.push('-f', 'mpegts', 'pipe:1');
 
   const proc = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   let settled = false;

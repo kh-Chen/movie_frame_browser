@@ -64,8 +64,13 @@ function formatHlsSegmentUri(segmentBase, start, end, options = {}) {
   return uri;
 }
 
-/** Guard so stream-copy demux stops strictly before the next segment's keyframe. */
-const SEGMENT_END_EPS_SEC = 0.001;
+/**
+ * Guard so stream-copy demux stops strictly before the next segment's keyframe.
+ * 0.001s is insufficient — ffmpeg's demuxer in copy mode may still emit the
+ * boundary keyframe even when -to is set 1 ms before it. Use a larger margin
+ * (0.1 s ≈ 3 frames at 30 fps) to reliably prevent keyframe overlap.
+ */
+const SEGMENT_END_EPS_SEC = 0.1;
 
 /**
  * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
@@ -115,7 +120,8 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
 
   while (cursor < end - 0.001) {
     const segEnd = Math.min(end, roundSeekTime(cursor + segDur));
-    const dur = roundSeekTime(Math.max(minSeg, segEnd - cursor));
+    const fullDur = segEnd - cursor;
+    const dur = roundSeekTime(Math.max(minSeg, fullDur - SEGMENT_END_EPS_SEC));
     segmentEntries.push({
       dur,
       uri: formatHlsSegmentUri(segmentBase, cursor, segEnd, { forceEncode: true }),
@@ -294,11 +300,14 @@ async function buildKeyframeAlignedPlaylist(
     }
 
     const segEnd = roundSeekTime(Math.min(end, keyframes[endIdx]));
-    const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
+    const fullDur = segEnd - segStart;
+    // Actual segment output is shorter by SEGMENT_END_EPS_SEC (cutTo margin).
+    // Align EXTINF with the real output so hls.js's timeline stays continuous.
+    const dur = roundSeekTime(Math.max(minSeg, fullDur - SEGMENT_END_EPS_SEC));
 
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { forceEncode: true }),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd),
     });
 
     segStartIdx = endIdx;
@@ -378,13 +387,12 @@ function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
  * reliably, avoiding fMP4 timestamp-offset bugs that cause visual flashbacks.
  * Headers are sent only after ffmpeg produces the first byte.
  *
- * All segments use re-encode (NOT stream-copy). This guarantees each segment
- * begins with a fresh IDR keyframe and ends precisely at `endTime`, avoiding
- * boundary-overlap flashbacks caused by ffprobe-reported keyframe timestamps
- * drifting from actual PTS values.
+ * Uses input `-ss` / `-to` with an exclusive end slightly before the next
+ * segment boundary so stream-copy does not emit the next keyframe (which would
+ * overlap the following segment and cause a visual flashback).
  *
- * @param {number} startTime - Segment start (seconds)
- * @param {number} endTime - Exclusive end (seconds, next segment start)
+ * @param {number} startTime - Segment start (seconds, ideally a keyframe)
+ * @param {number} endTime - Exclusive end (seconds, next keyframe / boundary)
  */
 function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   const start = roundSeekTime(Math.max(0, startTime));

@@ -308,8 +308,8 @@ async function buildKeyframeAlignedPlaylist(
 }
 
 /**
- * FFmpeg output options for remuxing a source clip into an HLS fMP4 segment.
- * MP4/MKV H.264/HEVC in copy mode needs bitstream filters for annex-B on some paths.
+ * FFmpeg output options for remuxing a source clip into an HLS TS segment.
+ * MP4/MKV H.264/HEVC in copy mode needs bitstream filters for annex-B.
  */
 function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
   const streamMaps = ['-map', '0:v:0', '-map', '0:a?'];
@@ -373,8 +373,9 @@ function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
 }
 
 /**
- * Stream a single HLS segment (fragmented MP4) from the source video to an HTTP
- * response. fMP4 is fed directly into MSE via hls.js without TS transmuxing.
+ * Stream a single HLS segment (MPEG-TS) from the source video to an HTTP
+ * response. TS is the native HLS segment format — hls.js handles TS discontinuity
+ * reliably, avoiding fMP4 timestamp-offset bugs that cause visual flashbacks.
  * Headers are sent only after ffmpeg produces the first byte.
  *
  * Uses input `-ss` / `-to` with an exclusive end slightly before the next
@@ -407,8 +408,7 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
     '-avoid_negative_ts', 'make_zero',
     '-fflags', '+genpts',
     '-reset_timestamps', '1',
-    '-f', 'mp4',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset',
+    '-f', 'mpegts',
     'pipe:1',
   ];
 
@@ -460,7 +460,7 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
     if (!res.headersSent) {
       res.status(200);
       res.set({
-        'Content-Type': 'video/mp4',
+        'Content-Type': 'video/MP2T',
         'Cache-Control': 'no-cache',
       });
       if (typeof res.flushHeaders === 'function') {

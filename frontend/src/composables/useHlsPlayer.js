@@ -76,10 +76,8 @@ export function useHlsPlayer(getMovieId) {
       hls = new Hls({
         enableWorker: false,
         startPosition: 0,
-        // Preview only needs a short buffer ahead; avoid flooding the server
-        // with hundreds of segment requests for the full movie playlist.
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
         maxBufferHole: 0.5,
       })
       hls.attachMedia(videoEl)

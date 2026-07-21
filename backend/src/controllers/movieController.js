@@ -402,7 +402,6 @@ async function getHlsSegment(req, res, next) {
     const endRaw = parseFloat(req.query.end);
     const durRaw = parseFloat(req.query.dur);
     const forceEncode = req.query.enc === '1' || req.query.enc === 'true';
-    const outputTsOffset = parseFloat(req.query.offset) || 0;
 
     if (isNaN(startRaw) || startRaw < 0) {
       return res.status(400).json({
@@ -455,7 +454,7 @@ async function getHlsSegment(req, res, next) {
     }
 
     const { done, kill } = ffmpegService.generateHlsSegment(
-      movie.originalPath, start, end, res, { codec: movie.codec, forceEncode, outputTsOffset }
+      movie.originalPath, start, end, res, { codec: movie.codec, forceEncode }
     );
 
     // Use response close (not request close) to detect client abort during streaming.

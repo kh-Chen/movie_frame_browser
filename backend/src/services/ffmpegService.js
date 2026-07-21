@@ -67,16 +67,19 @@ function formatHlsSegmentUri(segmentBase, start, end, options = {}) {
 /**
  * Tiny epsilon for generateHlsSegment's cutTo so stream-copy demux stops just
  * before the requested boundary. The primary boundary gap is applied by the
- * playlist builders via SEGMENT_BOUNDARY_GAP and baked into the URI parameters.
+ * playlist builders via SEGMENT_END_GAP and baked into the URI parameters.
  */
 const SEGMENT_END_EPS_SEC = 0.001;
 
 /**
- * Deliberate gap baked into playlist segment URIs: each segment ends
- * SEGMENT_BOUNDARY_GAP seconds before the next keyframe, so consecutive
- * segments cannot share the boundary I-frame (root cause of flashback).
+ * Gaps baked into playlist segment URIs so consecutive segments visibly
+ * cannot share the boundary I-frame (root cause of flashback).
+ *
+ *   ... | seg N |---end gap---|---start gap---| seg N+1 | ...
+ *                    0.1s           0.1s
  */
-const SEGMENT_BOUNDARY_GAP = 0.1;
+const SEGMENT_END_GAP = 0.1;
+const SEGMENT_START_GAP = 0.1;
 
 /**
  * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
@@ -126,11 +129,12 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
 
   while (cursor < end - 0.001) {
     const rawSegEnd = Math.min(end, roundSeekTime(cursor + segDur));
-    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_BOUNDARY_GAP);
-    const dur = roundSeekTime(Math.max(minSeg, segEnd - cursor));
+    const segStart = roundSeekTime(cursor + SEGMENT_START_GAP);
+    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_END_GAP);
+    const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, cursor, segEnd, { forceEncode: true }),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { forceEncode: true }),
     });
     cursor = rawSegEnd;
   }
@@ -294,7 +298,7 @@ async function buildKeyframeAlignedPlaylist(
 
   let segStartIdx = startIdx;
   while (segStartIdx < keyframes.length - 1) {
-    const segStart = roundSeekTime(keyframes[segStartIdx]);
+    const segStart = roundSeekTime(keyframes[segStartIdx] + SEGMENT_START_GAP);
 
     // Greedily extend until accumulated duration reaches targetSeg, or we hit
     // the last keyframe. Cut at keyframe[endIdx] — exclusive end of this segment
@@ -306,7 +310,7 @@ async function buildKeyframeAlignedPlaylist(
     }
 
     const rawSegEnd = roundSeekTime(Math.min(end, keyframes[endIdx]));
-    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_BOUNDARY_GAP);
+    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_END_GAP);
     const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
 
     segmentEntries.push({

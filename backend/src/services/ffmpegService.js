@@ -298,7 +298,7 @@ async function buildKeyframeAlignedPlaylist(
 
     segmentEntries.push({
       dur,
-      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd),
+      uri: formatHlsSegmentUri(segmentBase, segStart, segEnd, { forceEncode: true }),
     });
 
     segStartIdx = endIdx;
@@ -378,12 +378,13 @@ function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
  * reliably, avoiding fMP4 timestamp-offset bugs that cause visual flashbacks.
  * Headers are sent only after ffmpeg produces the first byte.
  *
- * Uses input `-ss` / `-to` with an exclusive end slightly before the next
- * segment boundary so stream-copy does not emit the next keyframe (which would
- * overlap the following segment and cause a visual flashback).
+ * All segments use re-encode (NOT stream-copy). This guarantees each segment
+ * begins with a fresh IDR keyframe and ends precisely at `endTime`, avoiding
+ * boundary-overlap flashbacks caused by ffprobe-reported keyframe timestamps
+ * drifting from actual PTS values.
  *
- * @param {number} startTime - Segment start (seconds, ideally a keyframe)
- * @param {number} endTime - Exclusive end (seconds, next keyframe / boundary)
+ * @param {number} startTime - Segment start (seconds)
+ * @param {number} endTime - Exclusive end (seconds, next segment start)
  */
 function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   const start = roundSeekTime(Math.max(0, startTime));

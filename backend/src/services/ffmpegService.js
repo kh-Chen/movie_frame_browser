@@ -65,12 +65,18 @@ function formatHlsSegmentUri(segmentBase, start, end, options = {}) {
 }
 
 /**
- * Guard so stream-copy demux stops strictly before the next segment's keyframe.
- * 0.001s is insufficient — ffmpeg's demuxer in copy mode may still emit the
- * boundary keyframe even when -to is set 1 ms before it. Use a larger margin
- * (0.1 s ≈ 3 frames at 30 fps) to reliably prevent keyframe overlap.
+ * Tiny epsilon for generateHlsSegment's cutTo so stream-copy demux stops just
+ * before the requested boundary. The primary boundary gap is applied by the
+ * playlist builders via SEGMENT_BOUNDARY_GAP and baked into the URI parameters.
  */
-const SEGMENT_END_EPS_SEC = 0.1;
+const SEGMENT_END_EPS_SEC = 0.001;
+
+/**
+ * Deliberate gap baked into playlist segment URIs: each segment ends
+ * SEGMENT_BOUNDARY_GAP seconds before the next keyframe, so consecutive
+ * segments cannot share the boundary I-frame (root cause of flashback).
+ */
+const SEGMENT_BOUNDARY_GAP = 0.1;
 
 /**
  * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
@@ -119,14 +125,14 @@ function buildHlsPlaylist(start, videoDuration, segDur, segmentBase = 'segment')
   const segmentEntries = [];
 
   while (cursor < end - 0.001) {
-    const segEnd = Math.min(end, roundSeekTime(cursor + segDur));
-    const fullDur = segEnd - cursor;
-    const dur = roundSeekTime(Math.max(minSeg, fullDur - SEGMENT_END_EPS_SEC));
+    const rawSegEnd = Math.min(end, roundSeekTime(cursor + segDur));
+    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_BOUNDARY_GAP);
+    const dur = roundSeekTime(Math.max(minSeg, segEnd - cursor));
     segmentEntries.push({
       dur,
       uri: formatHlsSegmentUri(segmentBase, cursor, segEnd, { forceEncode: true }),
     });
-    cursor = segEnd;
+    cursor = rawSegEnd;
   }
 
   return finalizeHlsPlaylist(segmentEntries);
@@ -299,11 +305,9 @@ async function buildKeyframeAlignedPlaylist(
       endIdx += 1;
     }
 
-    const segEnd = roundSeekTime(Math.min(end, keyframes[endIdx]));
-    const fullDur = segEnd - segStart;
-    // Actual segment output is shorter by SEGMENT_END_EPS_SEC (cutTo margin).
-    // Align EXTINF with the real output so hls.js's timeline stays continuous.
-    const dur = roundSeekTime(Math.max(minSeg, fullDur - SEGMENT_END_EPS_SEC));
+    const rawSegEnd = roundSeekTime(Math.min(end, keyframes[endIdx]));
+    const segEnd = roundSeekTime(rawSegEnd - SEGMENT_BOUNDARY_GAP);
+    const dur = roundSeekTime(Math.max(minSeg, segEnd - segStart));
 
     segmentEntries.push({
       dur,

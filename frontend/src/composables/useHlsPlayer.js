@@ -2,6 +2,7 @@ import { ref, onUnmounted } from 'vue'
 import Hls from 'hls.js'
 import { useMovieApi } from './useMovieApi'
 import { formatTimeShort } from '../utils/formatTime'
+import { createCachingFragLoader } from './hlsFragCacheLoader'
 
 /**
  * HLS preview player composable.
@@ -22,6 +23,7 @@ export function useHlsPlayer(getMovieId) {
   let currentVideo = null
   let attachToken = 0
   let mediaRecoveries = 0
+  let onTimeUpdate = null
 
   const resolveMovieId = () => (
     typeof getMovieId === 'function' ? getMovieId() : getMovieId
@@ -39,10 +41,13 @@ export function useHlsPlayer(getMovieId) {
     }
   }
 
-  const onError = (token) => {
+  const onError = (token, reason) => {
     if (token !== attachToken) return
     isLoading.value = false
     hasError.value = true
+    if (reason) {
+      console.error('HLS preview failed:', reason)
+    }
   }
 
   const attachTo = (videoEl, timestamp) => {
@@ -53,7 +58,7 @@ export function useHlsPlayer(getMovieId) {
     mediaRecoveries = 0
     const movieId = resolveMovieId()
     if (!movieId) {
-      onError(token)
+      onError(token, 'missing movieId')
       return
     }
 
@@ -65,22 +70,22 @@ export function useHlsPlayer(getMovieId) {
 
     const url = getHlsPlaylistUrl(movieId, timestamp)
 
-    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      videoEl.src = url
-      videoEl.addEventListener('loadedmetadata', () => {
-        markReady(token)
-        videoEl.play().catch(() => {})
-      }, { once: true })
-      videoEl.addEventListener('error', () => onError(token), { once: true })
-    } else if (Hls.isSupported()) {
+    // Prefer hls.js whenever MSE is available. Edge/Chrome may report native
+    // HLS via canPlayType, but native media requests use Range: bytes=0- and
+    // bypass our fragment memory/HTTP cache loader entirely.
+    if (Hls.isSupported()) {
+      // Only override fragment loader. Playlist/manifest must keep the default
+      // text loader — our cache loader returns ArrayBuffer and breaks m3u8 parse.
+      const CachingLoader = createCachingFragLoader(Hls.DefaultConfig.loader)
       hls = new Hls({
         enableWorker: false,
+        progressive: false,
         startPosition: 0,
-        // Preview only needs a short buffer ahead; avoid flooding the server
-        // with hundreds of segment requests for the full movie playlist.
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
+        maxBufferLength: 16,
+        maxMaxBufferLength: 30,
+        backBufferLength: 120,
         maxBufferHole: 0.5,
+        fLoader: CachingLoader,
       })
       hls.attachMedia(videoEl)
       hls.loadSource(url)
@@ -94,6 +99,20 @@ export function useHlsPlayer(getMovieId) {
         markReady(token)
       })
 
+      let lastMediaTime = 0
+      onTimeUpdate = () => {
+        if (token !== attachToken || !currentVideo) return
+        const t = currentVideo.currentTime
+        if (Number.isFinite(t) && lastMediaTime > 0 && t < lastMediaTime - 1) {
+          console.warn('HLS timeline rewind detected:', {
+            from: lastMediaTime,
+            to: t,
+          })
+        }
+        if (Number.isFinite(t)) lastMediaTime = t
+      }
+      videoEl.addEventListener('timeupdate', onTimeUpdate)
+
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (token !== attachToken || !hls) return
 
@@ -104,8 +123,6 @@ export function useHlsPlayer(getMovieId) {
 
         console.error('HLS fatal error:', data.type, data.details, data)
 
-        // recoverMediaError() resets the decoder and often seeks backward.
-        // Allow one recovery per attach; repeated recoveries look like progress rewind.
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 1) {
           mediaRecoveries += 1
           hls.recoverMediaError()
@@ -115,10 +132,19 @@ export function useHlsPlayer(getMovieId) {
           hls.startLoad()
           return
         }
-        onError(token)
+        onError(token, `${data.type}:${data.details}`)
       })
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = url
+      videoEl.addEventListener('loadedmetadata', () => {
+        markReady(token)
+        videoEl.play().catch(() => {})
+      }, { once: true })
+      videoEl.addEventListener('error', () => {
+        onError(token, videoEl.error || 'native video error')
+      }, { once: true })
     } else {
-      onError(token)
+      onError(token, 'HLS not supported')
     }
   }
 
@@ -129,6 +155,10 @@ export function useHlsPlayer(getMovieId) {
       hls = null
     }
     if (currentVideo) {
+      if (onTimeUpdate) {
+        currentVideo.removeEventListener('timeupdate', onTimeUpdate)
+        onTimeUpdate = null
+      }
       currentVideo.pause()
       currentVideo.removeAttribute('src')
       currentVideo.load()

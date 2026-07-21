@@ -84,12 +84,11 @@ const SEGMENT_START_GAP = 0.1;
 /**
  * Assemble a VOD media playlist with required TARGETDURATION for hls.js.
  *
- * Each segment is independently remuxed with -reset_timestamps 1 (needed so
- * copied video PTS and re-encoded AAC both start at 0). Without an explicit
- * discontinuity between segments, players treat the replay of PTS≈0 as a
- * backward jump on the media timeline — native progress bar "rewinds" at
- * every segment boundary. Mark each boundary so hls.js/Safari adjust
- * timestampOffset instead.
+ * Each on-demand segment is remuxed independently with `-reset_timestamps 1`
+ * (PTS/DTS restart near 0). Chrome MSE requires monotonic DTS within a
+ * continuity sequence, so every boundary after the first must be marked with
+ * `#EXT-X-DISCONTINUITY` — otherwise append fails with
+ * CHUNK_DEMUXER_ERROR_APPEND_FAILED / "not in DTS sequence".
  */
 function finalizeHlsPlaylist(segmentEntries) {
   const maxDur = Math.max(1, ...segmentEntries.map((entry) => entry.dur));
@@ -390,17 +389,123 @@ function buildHlsOutputOptions(videoCodec, videoPath, options = {}) {
 }
 
 /**
+ * Disk cache path for an on-demand HLS segment.
+ * v3: independent remux (PTS reset + DISCONTINUITY); no ots in key.
+ */
+function getHlsSegmentCachePath(movieId, start, end, forceEncode = false) {
+  const safeId = String(movieId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const name = `v3_${roundSeekTime(start)}_${roundSeekTime(end)}${forceEncode ? '_enc' : ''}.ts`;
+  return path.join(config.paths.hls, safeId, name);
+}
+
+async function hlsSegmentCacheExists(cachePath) {
+  try {
+    const stat = await fsPromises.stat(cachePath);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** In-flight segment builds keyed by cache path (coalesce concurrent requests). */
+const hlsSegmentInflight = new Map();
+
+/**
+ * Stream a cached MPEG-TS file to the HTTP response with Content-Length so
+ * browsers / hls.js can reuse HTTP cache on discontinuity re-fetches.
+ * @returns {{ done: Promise<void>, kill: Function }}
+ */
+function streamHlsSegmentFile(cachePath, res) {
+  let settled = false;
+  let stream = null;
+
+  const done = new Promise((resolve, reject) => {
+    let stat;
+    try {
+      stat = fs.statSync(cachePath);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    if (!stat.isFile() || stat.size <= 0) {
+      reject(new Error('HLS segment cache empty'));
+      return;
+    }
+
+    const etag = `"${stat.size}-${Math.trunc(stat.mtimeMs)}"`;
+    const inm = res.req && res.req.headers && res.req.headers['if-none-match'];
+    if (inm && inm === etag) {
+      res.status(304);
+      res.set({
+        ETag: etag,
+        'Cache-Control': 'public, max-age=86400, immutable',
+      });
+      res.end();
+      settled = true;
+      resolve();
+      return;
+    }
+
+    stream = fs.createReadStream(cachePath);
+    stream.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
+    stream.on('open', () => {
+      if (!res.headersSent) {
+        res.status(200);
+        res.set({
+          'Content-Type': 'video/MP2T',
+          'Content-Length': String(stat.size),
+          ETag: etag,
+          // Unique start/end URLs — safe to cache across reloads / soft seeks.
+          'Cache-Control': 'public, max-age=86400, immutable',
+        });
+      }
+    });
+    stream.on('end', () => {
+      if (settled) return;
+      settled = true;
+      if (!res.writableEnded) res.end();
+      resolve();
+    });
+    stream.pipe(res, { end: false });
+    res.on('close', () => {
+      if (!settled && stream) {
+        stream.destroy();
+      }
+    });
+  });
+
+  return {
+    done,
+    kill: () => {
+      if (stream) stream.destroy();
+    },
+  };
+}
+
+/**
  * Stream a single HLS segment (MPEG-TS) from the source video to an HTTP
- * response. TS is the native HLS segment format — hls.js handles TS discontinuity
- * reliably, avoiding fMP4 timestamp-offset bugs that cause visual flashbacks.
- * Headers are sent only after ffmpeg produces the first byte.
+ * response. Optionally tees to a disk cache file for reuse.
+ *
+ * Intra-segment: `-reset_timestamps 1` so copied video and re-encoded AAC share
+ * a zero base. Cross-segment continuity is expressed in the playlist via
+ * `#EXT-X-DISCONTINUITY` (required for Chrome MSE when DTS restarts).
+ *
+ * Do not use `-output_ts_offset` to stitch segments into one continuity
+ * sequence: stream-copy duration often exceeds EXTINF, so DTS ranges overlap
+ * and Chrome fails with CHUNK_DEMUXER_ERROR_APPEND_FAILED.
  *
  * Uses input `-ss` / `-to` with an exclusive end slightly before the next
- * segment boundary so stream-copy does not emit the next keyframe (which would
- * overlap the following segment and cause a visual flashback).
+ * segment boundary so stream-copy does not emit the next keyframe.
  *
  * @param {number} startTime - Segment start (seconds, ideally a keyframe)
  * @param {number} endTime - Exclusive end (seconds, next keyframe / boundary)
+ * @param {object} [options]
+ * @param {string} [options.cachePath] - When set, tee stdout to this path
  */
 function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   const start = roundSeekTime(Math.max(0, startTime));
@@ -411,6 +516,8 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   const outputOptions = buildHlsOutputOptions(options.codec, videoPath, {
     forceEncode: Boolean(options.forceEncode),
   });
+  const cachePath = options.cachePath || null;
+  const partPath = cachePath ? `${cachePath}.part` : null;
 
   const args = [
     '-hide_banner',
@@ -424,6 +531,7 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
     '-t', String(mediaDur),
     '-avoid_negative_ts', 'make_zero',
     '-fflags', '+genpts',
+    // Independent segment: A/V both start near 0; playlist marks DISCONTINUITY.
     '-reset_timestamps', '1',
     '-f', 'mpegts',
     'pipe:1',
@@ -434,6 +542,23 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   let stderr = '';
   let bytesWritten = 0;
   let timeoutId = null;
+  let cacheStream = null;
+  let cacheFailed = false;
+
+  if (partPath) {
+    try {
+      fs.mkdirSync(path.dirname(partPath), { recursive: true });
+      cacheStream = fs.createWriteStream(partPath);
+      cacheStream.on('error', (err) => {
+        cacheFailed = true;
+        logger.warn('HLS segment cache write failed', { partPath, error: err.message });
+      });
+    } catch (err) {
+      cacheFailed = true;
+      logger.warn('HLS segment cache open failed', { partPath, error: err.message });
+      cacheStream = null;
+    }
+  }
 
   const clearSegmentTimeout = () => {
     if (timeoutId) {
@@ -442,14 +567,51 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
     }
   };
 
-  const finish = (error) => {
-    if (settled) return;
-    settled = true;
-    clearSegmentTimeout();
-    if (error && !res.headersSent && !res.writableEnded) {
-      // Controller will send JSON via next(error).
+  const cleanupPart = () => {
+    if (!partPath) return;
+    try {
+      if (cacheStream) {
+        cacheStream.destroy();
+        cacheStream = null;
+      }
+      if (fs.existsSync(partPath)) {
+        fs.unlinkSync(partPath);
+      }
+    } catch (e) {
+      logger.debug('HLS segment part cleanup failed', { error: e.message });
+    }
+  };
+
+  const commitCache = () => new Promise((resolve) => {
+    if (!partPath) {
+      resolve();
       return;
     }
+
+    const renameOrDrop = (ok) => {
+      if (ok && !cacheFailed && bytesWritten > 0 && fs.existsSync(partPath)) {
+        try {
+          fs.renameSync(partPath, cachePath);
+        } catch (e) {
+          logger.warn('HLS segment cache rename failed', { cachePath, error: e.message });
+          cleanupPart();
+        }
+      } else {
+        cleanupPart();
+      }
+      resolve();
+    };
+
+    if (cacheStream) {
+      const stream = cacheStream;
+      cacheStream = null;
+      stream.end(() => renameOrDrop(true));
+      return;
+    }
+    renameOrDrop(false);
+  });
+
+  const finishResponse = () => {
     if (!res.writableEnded) {
       res.end();
     }
@@ -478,29 +640,42 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
       res.status(200);
       res.set({
         'Content-Type': 'video/MP2T',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': cachePath ? 'public, max-age=86400' : 'no-cache',
       });
       if (typeof res.flushHeaders === 'function') {
         res.flushHeaders();
       }
     }
     res.write(chunk);
+    if (cacheStream && !cacheFailed) {
+      cacheStream.write(chunk);
+    }
   });
 
   let settleFn = null;
 
   const done = new Promise((resolve, reject) => {
-    settleFn = (err) => {
+    settleFn = async (err) => {
       if (settled) return;
+      settled = true;
+      clearSegmentTimeout();
+
       if (err) {
         logger.error('HLS segment failed', {
           videoPath, start, end: cutTo, bytesWritten, error: err.message, stderr: stderr.slice(0, 500),
         });
-        finish(err);
+        cleanupPart();
+        if (!res.headersSent && !res.writableEnded) {
+          // Controller will send JSON via next(error).
+        } else {
+          finishResponse();
+        }
         reject(err);
         return;
       }
-      finish();
+
+      await commitCache();
+      finishResponse();
       resolve();
     };
 
@@ -525,15 +700,219 @@ function generateHlsSegment(videoPath, startTime, endTime, res, options = {}) {
   });
 
   const kill = () => {
+    if (settled) return;
     clearSegmentTimeout();
     try {
       proc.kill('SIGKILL');
     } catch (e) {
       logger.debug('HLS segment kill failed (already exited)', { error: e.message });
     }
+    cleanupPart();
   };
 
   return { done, kill };
+}
+
+/**
+ * Generate an HLS segment directly to a cache file (no HTTP streaming).
+ * Used so every client response can include Content-Length + ETag.
+ */
+function generateHlsSegmentToFile(videoPath, startTime, endTime, cachePath, options = {}) {
+  const start = roundSeekTime(Math.max(0, startTime));
+  const endExclusive = roundSeekTime(Math.max(start + 0.1, endTime));
+  const cutTo = roundSeekTime(Math.max(start + 0.05, endExclusive - SEGMENT_END_EPS_SEC));
+  const mediaDur = roundSeekTime(Math.max(0.05, cutTo - start));
+  const outputOptions = buildHlsOutputOptions(options.codec, videoPath, {
+    forceEncode: Boolean(options.forceEncode),
+  });
+  const partPath = `${cachePath}.part`;
+
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-ss', String(start),
+    '-to', String(cutTo),
+    '-i', videoPath,
+    ...outputOptions,
+    '-t', String(mediaDur),
+    '-avoid_negative_ts', 'make_zero',
+    '-fflags', '+genpts',
+    '-reset_timestamps', '1',
+    '-f', 'mpegts',
+    partPath,
+  ];
+
+  const proc = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  let settled = false;
+  let stderr = '';
+  let timeoutId = null;
+
+  const clearSegmentTimeout = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  const cleanupPart = () => {
+    try {
+      if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+    } catch (e) {
+      logger.debug('HLS segment part cleanup failed', { error: e.message });
+    }
+  };
+
+  timeoutId = setTimeout(() => {
+    logger.error('HLS segment timed out', { videoPath, start, end: cutTo });
+    try {
+      proc.kill('SIGKILL');
+    } catch (e) {
+      logger.debug('HLS segment timeout kill failed', { error: e.message });
+    }
+  }, config.hls.segmentTimeoutSec * 1000);
+
+  proc.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+    if (stderr.length > 4000) stderr = stderr.slice(-4000);
+  });
+
+  const done = new Promise((resolve, reject) => {
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      clearSegmentTimeout();
+      if (err) {
+        cleanupPart();
+        reject(err);
+        return;
+      }
+      try {
+        const stat = fs.statSync(partPath);
+        if (!stat.isFile() || stat.size <= 0) {
+          cleanupPart();
+          reject(new Error('HLS segment produced empty file'));
+          return;
+        }
+        fs.renameSync(partPath, cachePath);
+        resolve();
+      } catch (e) {
+        cleanupPart();
+        reject(e);
+      }
+    };
+
+    proc.on('error', (err) => finish(err));
+    proc.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        const message = stderr.trim() || `ffmpeg exited with code ${code}`;
+        logger.error('HLS segment failed', {
+          videoPath, start, end: cutTo, error: message, stderr: stderr.slice(0, 500),
+        });
+        finish(new Error(message));
+        return;
+      }
+      finish();
+    });
+  });
+
+  const kill = () => {
+    if (settled) return;
+    clearSegmentTimeout();
+    try {
+      proc.kill('SIGKILL');
+    } catch (e) {
+      logger.debug('HLS segment kill failed (already exited)', { error: e.message });
+    }
+    cleanupPart();
+  };
+
+  return { done, kill };
+}
+
+/**
+ * Serve an HLS segment from disk cache when present; otherwise generate to disk
+ * first, then stream with Content-Length (so browsers can HTTP-cache / 304).
+ *
+ * @returns {Promise<{ done: Promise<void>, kill: Function }>}
+ */
+async function serveHlsSegment(videoPath, startTime, endTime, res, options = {}) {
+  const start = roundSeekTime(Math.max(0, startTime));
+  const end = roundSeekTime(Math.max(start + 0.1, endTime));
+  const forceEncode = Boolean(options.forceEncode);
+  const movieId = options.movieId;
+  const cachePath = movieId
+    ? getHlsSegmentCachePath(movieId, start, end, forceEncode)
+    : null;
+
+  if (!cachePath) {
+    return generateHlsSegment(videoPath, start, end, res, options);
+  }
+
+  while (true) {
+    if (typeof options.isAborted === 'function' && options.isAborted()) {
+      const err = new Error('HLS segment request aborted');
+      err.code = 'ABORTED';
+      throw err;
+    }
+
+    if (await hlsSegmentCacheExists(cachePath)) {
+      return streamHlsSegmentFile(cachePath, res);
+    }
+
+    if (hlsSegmentInflight.has(cachePath)) {
+      try {
+        await hlsSegmentInflight.get(cachePath);
+      } catch {
+        // Leader failed — retry loop.
+      }
+      continue;
+    }
+
+    let resolveBuild;
+    let rejectBuild;
+    const buildPromise = new Promise((resolve, reject) => {
+      resolveBuild = resolve;
+      rejectBuild = reject;
+    });
+    hlsSegmentInflight.set(cachePath, buildPromise);
+
+    const { done: genDone, kill: genKill } = generateHlsSegmentToFile(
+      videoPath, start, end, cachePath, options
+    );
+
+    let currentKill = genKill;
+    const done = (async () => {
+      try {
+        await genDone;
+        resolveBuild();
+      } catch (err) {
+        rejectBuild(err);
+        throw err;
+      } finally {
+        if (hlsSegmentInflight.get(cachePath) === buildPromise) {
+          hlsSegmentInflight.delete(cachePath);
+        }
+      }
+
+      if (typeof options.isAborted === 'function' && options.isAborted()) {
+        const err = new Error('HLS segment request aborted');
+        err.code = 'ABORTED';
+        throw err;
+      }
+
+      const streamed = streamHlsSegmentFile(cachePath, res);
+      currentKill = streamed.kill;
+      await streamed.done;
+    })();
+
+    return {
+      done,
+      kill: () => currentKill(),
+    };
+  }
 }
 
 /** Probe all keyframe timestamps across the full video (chunked for long files). */
@@ -1088,6 +1467,9 @@ module.exports = {
   buildHlsPlaylist,
   buildKeyframeAlignedPlaylist,
   generateHlsSegment,
+  serveHlsSegment,
+  getHlsSegmentCachePath,
+  hlsSegmentCacheExists,
   deleteKeyframeCacheFromDisk,
   extractAllKeyframesBatch,
   extractFrameBatch,

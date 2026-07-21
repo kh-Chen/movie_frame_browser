@@ -391,7 +391,7 @@ async function getHlsPlaylist(req, res, next) {
 }
 
 /**
- * Stream a single HLS segment (fMP4) on demand. No disk caching.
+ * Stream a single HLS segment (MPEG-TS) on demand, with disk cache by start/end.
  * Query: start & end (exclusive), or legacy start & dur.
  * Optional enc=1 forces video re-encode (fixed-grid fallback).
  */
@@ -453,20 +453,49 @@ async function getHlsSegment(req, res, next) {
       });
     }
 
-    const { done, kill } = ffmpegService.generateHlsSegment(
-      movie.originalPath, start, end, res, { codec: movie.codec, forceEncode }
-    );
-
-    // Use response close (not request close) to detect client abort during streaming.
+    let sessionKill = () => {};
+    let aborted = false;
     res.on('close', () => {
+      aborted = true;
       if (!res.writableEnded) {
-        kill();
+        sessionKill();
       }
     });
+
+    let done;
+    let kill;
+    try {
+      ({ done, kill } = await ffmpegService.serveHlsSegment(
+        movie.originalPath,
+        start,
+        end,
+        res,
+        {
+          codec: movie.codec,
+          forceEncode,
+          movieId: id,
+          isAborted: () => aborted,
+        }
+      ));
+    } catch (error) {
+      if (error.code === 'ABORTED' || aborted) {
+        return;
+      }
+      throw error;
+    }
+    sessionKill = kill;
+
+    if (aborted) {
+      kill();
+      return;
+    }
 
     try {
       await done;
     } catch (error) {
+      if (aborted) {
+        return;
+      }
       if (!res.headersSent) {
         next(error);
       } else {

@@ -122,6 +122,7 @@ async function deleteMovieFiles(movieId) {
   const dirs = [
     path.join(config.paths.frames, movieId),
     path.join(config.paths.temp, movieId),
+    path.join(config.paths.hls, movieId),
   ];
 
   const files = [getCoverPath(movieId)];
@@ -353,6 +354,7 @@ async function deleteMovieCache(movieId) {
   const dirs = [
     path.join(config.paths.frames, movieId),
     path.join(config.paths.temp, movieId),
+    path.join(config.paths.hls, movieId),
   ];
 
   for (const dir of dirs) {

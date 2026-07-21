@@ -90,7 +90,7 @@ const config = {
     defaultQuality: parseInt(process.env.DEFAULT_FRAME_QUALITY) || 75,
   },
 
-  // HLS dynamic packaging settings (on-demand segment generation, no cache)
+  // HLS dynamic packaging (on-demand; segments cached under paths.hls)
   hls: {
     segmentDuration: parseFloat(process.env.HLS_SEGMENT_DURATION) || 6,
     segmentTimeoutSec: Math.max(10, parseInt(process.env.HLS_SEGMENT_TIMEOUT_SEC, 10) || 30),
